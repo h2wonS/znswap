@@ -336,6 +336,7 @@ struct swap_zone {
 	atomic_t open;			/* 1- taken, 2- open for write,
 					   3- finished			*/
 	int cur_open_slot;
+        struct page_md_m *mapping_arr;
 };
 
 struct fine_discard_work {

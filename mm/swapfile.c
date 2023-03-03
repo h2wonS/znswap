@@ -3669,6 +3669,7 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 		int i;
 		for (i = 0; i < zi->num_zones; i++) {
 			kfree(zi->swap_zones[i].swap_map);
+			kfree(zi->swap_zones[i].mapping_arr);
 			kfree(zi->swap_zones[i].slot_lock);
 		}
 
@@ -4423,21 +4424,23 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 
 			swap_zones[i].cur_open_slot = -1;
 
-			swap_zones[i].swap_map = kzalloc(zi->zone_capacity, GFP_KERNEL);
-			if (!swap_zones[i].swap_map) {
-				error = -ENOMEM;
-				goto bad_swap;
-			}
-			nr_cluster = DIV_ROUND_UP(zi->zone_capacity, SWAPFILE_CLUSTER);
-			swap_zones[i].slot_lock = kmalloc_array(nr_cluster,
-					sizeof(spinlock_t), GFP_KERNEL);
-			if (!swap_zones[i].slot_lock) {
-				error = -ENOMEM;
-				goto bad_swap;
-			}
-			for (j = 0; j < nr_cluster; j++)
-				spin_lock_init(&swap_zones[i].slot_lock[j]);
-		}
+                        swap_zones[i].swap_map = kzalloc(zi->zone_capacity, GFP_KERNEL);
+                        swap_zones[i].mapping_arr = kzalloc(sizeof(struct page_md_m), GFP_KERNEL);
+
+                        if (!swap_zones[i].swap_map) {
+                            error = -ENOMEM;
+                            goto bad_swap;
+                        }
+                        nr_cluster = DIV_ROUND_UP(zi->zone_capacity, SWAPFILE_CLUSTER);
+                        swap_zones[i].slot_lock = kmalloc_array(nr_cluster,
+                                sizeof(spinlock_t), GFP_KERNEL);
+                        if (!swap_zones[i].slot_lock) {
+                            error = -ENOMEM;
+                            goto bad_swap;
+                        }
+                        for (j = 0; j < nr_cluster; j++)
+                            spin_lock_init(&swap_zones[i].slot_lock[j]);
+                }
 
 		zi->gc_waiting_bitmap = bitmap_zalloc(zi->num_zones, GFP_KERNEL);
 		if (!zi->gc_waiting_bitmap) {
@@ -5729,6 +5732,7 @@ static void end_zns_gc_read(struct bio *bio)
 		BUG();
 	}
 
+        /*
 	if (bio->bi_opf & REQ_SWAP_MET) {
 		struct page_ext *pe;
 
@@ -5740,6 +5744,21 @@ static void end_zns_gc_read(struct bio *bio)
 		pe->num_samples = bio->bi_page_md.num_samples;
 		BUG_ON(!page->mapping);
 	}
+        */
+
+        struct page_ext *pe;
+        
+        pgoff_t zone_off, off;
+        off = swp_offset(entry);
+        zone_off = zns_offset_to_zone_off(zi, off);
+        int from_zone;
+        from_zone = zi->rctx.from_zone;
+        
+        page->index = zi->swap_zones[from_zone].mapping_arr[zone_off].index;
+        page->mapping = zi->swap_zones[from_zone].mapping_arr[zone_off].mapping;
+        pe->accessed_bitmap = zi->swap_zones[from_zone].mapping_arr[zone_off].accessed_bitmap;
+        pe->num_samples = zi->swap_zones[from_zone].mapping_arr[zone_off].num_samples;
+
 	pages_read = atomic_inc_return(&zi->rctx.finished_read);
 
 	if (pages_read == zi->rctx.num_pages)
@@ -5996,7 +6015,7 @@ retry_new_slot:
 		zone_start =  (zi->zone_size << 3) * gc_zone_num;
 
 		bio_reset(move_bio);
-		move_bio->bi_opf = REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
+		move_bio->bi_opf = REQ_OP_ZONE_APPEND;
 		if (zi->zns_cgroup_account) {
 			unsigned short id;
 			struct mem_cgroup *memcg = NULL;
@@ -6128,7 +6147,7 @@ retry:
 		/* store in private where this data was read from */
 		set_page_private(move_page, src_addr.val);
 		bio_reset(move_bio);
-		move_bio->bi_opf = REQ_OP_READ | REQ_SWAP_MET;
+		move_bio->bi_opf = REQ_OP_READ;
 		if (zi->zns_cgroup_account) {
 			unsigned short id;
 			struct mem_cgroup *memcg = NULL;
