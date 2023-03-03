@@ -3670,6 +3670,7 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 		for (i = 0; i < zi->num_zones; i++) {
 			kfree(zi->swap_zones[i].swap_map);
 			kfree(zi->swap_zones[i].mapping_arr);
+                        printk("[%s::%s::%d] i=%d \n", __FILE__, __func__, __LINE__, i);
 			kfree(zi->swap_zones[i].slot_lock);
 		}
 
@@ -4425,7 +4426,8 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 			swap_zones[i].cur_open_slot = -1;
 
                         swap_zones[i].swap_map = kzalloc(zi->zone_capacity, GFP_KERNEL);
-                        swap_zones[i].mapping_arr = kzalloc(sizeof(struct page_md_m), GFP_KERNEL);
+                        swap_zones[i].mapping_arr = kcalloc(zi->zone_capacity ,sizeof(struct page_md_m), GFP_KERNEL);
+                        printk("[%s::%s::%d] zi->zone_capacity=%d page_md_m size =%ld\n", __FILE__, __func__, __LINE__, zi->zone_capacity, sizeof(struct page_md_m));
 
                         if (!swap_zones[i].swap_map) {
                             error = -ENOMEM;
@@ -5732,7 +5734,7 @@ static void end_zns_gc_read(struct bio *bio)
 		BUG();
 	}
 
-        /*
+        
 	if (bio->bi_opf & REQ_SWAP_MET) {
 		struct page_ext *pe;
 
@@ -5744,8 +5746,8 @@ static void end_zns_gc_read(struct bio *bio)
 		pe->num_samples = bio->bi_page_md.num_samples;
 		BUG_ON(!page->mapping);
 	}
-        */
 
+        printk("[%s::%s::%d]\n", __FILE__, __func__, __LINE__);
         struct page_ext *pe;
         
         pgoff_t zone_off, off;
@@ -5753,6 +5755,7 @@ static void end_zns_gc_read(struct bio *bio)
         zone_off = zns_offset_to_zone_off(zi, off);
         int from_zone;
         from_zone = zi->rctx.from_zone;
+        printk("[%s::%s::%d] from_zone=%d zone_off=0x%lx\n", __FILE__, __func__, __LINE__, from_zone, zone_off);
         
         page->index = zi->swap_zones[from_zone].mapping_arr[zone_off].index;
         page->mapping = zi->swap_zones[from_zone].mapping_arr[zone_off].mapping;
@@ -6016,6 +6019,7 @@ retry_new_slot:
 
 		bio_reset(move_bio);
 		move_bio->bi_opf = REQ_OP_ZONE_APPEND;
+                printk("[%s::%s::%d]\n", __FILE__, __func__, __LINE__);
 		if (zi->zns_cgroup_account) {
 			unsigned short id;
 			struct mem_cgroup *memcg = NULL;

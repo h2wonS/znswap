@@ -131,7 +131,8 @@ static void end_swap_bio_read(struct bio *bio)
 	struct task_struct *waiter = bio->bi_private;
 
 	VM_BUG_ON(zns_enabled());
-        update_page_accessed(page, true);
+        if (bio->bi_opf & REQ_SWAP_MET)
+            update_page_accessed(page, true);
 
 
 	if (bio->bi_status) {
@@ -380,6 +381,7 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 		sector_t zone_start =  (sis->zns_swap->zone_size << 3) *
 			swp_offset(entry);
 		bio->bi_opf |= REQ_OP_ZONE_APPEND;
+                printk("[%s::%s::%d]\n", __FILE__, __func__, __LINE__);
 		bio->bi_iter.bi_sector = zone_start;
 	} else if (is_zns_swp_entry(entry)){
 		BUG();
@@ -453,6 +455,7 @@ int swap_readpage(struct page *page, bool synchronous)
 	bio = bio_alloc(GFP_KERNEL, 1);
 	bio_set_dev(bio, sis->bdev);
         bio->bi_opf = REQ_OP_READ;
+        printk("[%s::%s::%d]\n", __FILE__, __func__, __LINE__);
 	bio->bi_iter.bi_sector = swap_page_sector(page);
 	bio->bi_end_io = end_swap_bio_read;
 	bio_add_page(bio, page, thp_size(page), 0);
