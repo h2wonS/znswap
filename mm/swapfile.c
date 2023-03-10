@@ -973,8 +973,10 @@ static inline bool allocate_free_zone(struct zns_swap_info_struct *zi,
 		}
 	}
 
-	if (free_zones < zi->low_wmark && !is_gc)
+	if (free_zones < zi->low_wmark && !is_gc){
+                printk("[%s::%s::%d] free_zones=%d\n", __FILE__, __func__, __LINE__, free_zones);
 		wakeup_kznsd(zi);
+        }
 
 	zone = atomic_read(&zi->last_alloced_zone);
 	while (true) {
@@ -3670,7 +3672,6 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 		for (i = 0; i < zi->num_zones; i++) {
 			kfree(zi->swap_zones[i].swap_map);
 			kfree(zi->swap_zones[i].mapping_arr);
-                        printk("[%s::%s::%d] i=%d \n", __FILE__, __func__, __LINE__, i);
 			kfree(zi->swap_zones[i].slot_lock);
 		}
 
@@ -4426,10 +4427,14 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 			swap_zones[i].cur_open_slot = -1;
 
                         swap_zones[i].swap_map = kzalloc(zi->zone_capacity, GFP_KERNEL);
-                        swap_zones[i].mapping_arr = kcalloc(zi->zone_capacity ,sizeof(struct page_md_m), GFP_KERNEL);
-                        printk("[%s::%s::%d] zi->zone_capacity=%d page_md_m size =%ld\n", __FILE__, __func__, __LINE__, zi->zone_capacity, sizeof(struct page_md_m));
+                        swap_zones[i].mapping_arr = kcalloc((zi->zone_capacity/PAGE_SIZE) ,sizeof(struct page_md_m), GFP_KERNEL);
 
                         if (!swap_zones[i].swap_map) {
+                            error = -ENOMEM;
+                            goto bad_swap;
+                        }
+                        if (!swap_zones[i].mapping_arr) {
+                            printk("[%s::%s::%d] fuck shit\n", __FILE__, __func__, __LINE__);
                             error = -ENOMEM;
                             goto bad_swap;
                         }
@@ -5687,6 +5692,12 @@ static void end_zns_gc_write(struct bio *bio)
 	new_off = bio->bi_iter.bi_sector >> 3;
 	new_zone = new_off / zi->zone_size;
 	new_zone_off = new_off % zi->zone_size;
+        
+        printk("[%s::%s::%d] index=0x%lx, mapping=0x%lx, new_off=0x%lx, new_zone=%d, new_zone_off=%d \
+                rctx_index=0x%lx, rctx_map=0x%lx, rctx_fromzone=%d\n",
+                 __FILE__, __func__, __LINE__, page->index, page->mapping,
+                 new_off, new_zone, new_zone_off,
+                 zi->rctx.buffer[0].mapping, zi->rctx.buffer[0].index, zi->rctx.from_zone);
 
 	if (bio->bi_status) {
 		pr_info("Error writing to disk during GC zone %d slotc %u slot count %u max %u open %d\n",
@@ -5745,9 +5756,10 @@ static void end_zns_gc_read(struct bio *bio)
 		pe->accessed_bitmap = bio->bi_page_md.accessed_bitmap;
 		pe->num_samples = bio->bi_page_md.num_samples;
 		BUG_ON(!page->mapping);
+
+                printk("[%s::%s::%d] ORIGINAL index=0x%lx, mapping=0x%lx, accessed_bitmap=%d, num_samples=%ld\n", __FILE__, __func__, __LINE__, page->index, page->mapping, pe->accessed_bitmap, pe->num_samples);
 	}
 
-        printk("[%s::%s::%d]\n", __FILE__, __func__, __LINE__);
         struct page_ext *pe;
         
         pgoff_t zone_off, off;
@@ -5755,12 +5767,12 @@ static void end_zns_gc_read(struct bio *bio)
         zone_off = zns_offset_to_zone_off(zi, off);
         int from_zone;
         from_zone = zi->rctx.from_zone;
-        printk("[%s::%s::%d] from_zone=%d zone_off=0x%lx\n", __FILE__, __func__, __LINE__, from_zone, zone_off);
-        
-        page->index = zi->swap_zones[from_zone].mapping_arr[zone_off].index;
-        page->mapping = zi->swap_zones[from_zone].mapping_arr[zone_off].mapping;
-        pe->accessed_bitmap = zi->swap_zones[from_zone].mapping_arr[zone_off].accessed_bitmap;
-        pe->num_samples = zi->swap_zones[from_zone].mapping_arr[zone_off].num_samples;
+
+        printk("[%s::%s::%d] NEW from_zone=%d zone_off=0x%lx index=0x%lx, mapping=0x%lx, accessed_bitmap=%d, num_samples=%ld\n", __FILE__, __func__, __LINE__, from_zone, zone_off,
+        zi->swap_zones[from_zone].mapping_arr[zone_off].index,
+        zi->swap_zones[from_zone].mapping_arr[zone_off].mapping,
+        zi->swap_zones[from_zone].mapping_arr[zone_off].accessed_bitmap,
+        zi->swap_zones[from_zone].mapping_arr[zone_off].num_samples);
 
 	pages_read = atomic_inc_return(&zi->rctx.finished_read);
 
@@ -5838,6 +5850,9 @@ retry:
 		/* lock swap cluster so zap cannot free VMA from under us */
 		spin_lock(&sz_src->slot_lock[src_cluster]);
 		map_count = READ_ONCE(sz_src->swap_map[src_offset]);
+                
+                printk("[%s::%s::%d] index=0x%lx, mapping=0x%lx, src_zone=%d, src_ofst=0x%lx, dst_zone=%d, dst_ofst=0x%lx\n", 
+                __FILE__, __func__, __LINE__, move_page->index, move_page->mapping, src_zone, src_offset, dst_zone, dst_offset);
 
 		/* no remap needed this was freed from under us */
 		if (!map_count) {
@@ -6018,7 +6033,7 @@ retry_new_slot:
 		zone_start =  (zi->zone_size << 3) * gc_zone_num;
 
 		bio_reset(move_bio);
-		move_bio->bi_opf = REQ_OP_ZONE_APPEND;
+		move_bio->bi_opf = REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
                 printk("[%s::%s::%d]\n", __FILE__, __func__, __LINE__);
 		if (zi->zns_cgroup_account) {
 			unsigned short id;
@@ -6151,7 +6166,7 @@ retry:
 		/* store in private where this data was read from */
 		set_page_private(move_page, src_addr.val);
 		bio_reset(move_bio);
-		move_bio->bi_opf = REQ_OP_READ;
+		move_bio->bi_opf = REQ_OP_READ | REQ_SWAP_MET;
 		if (zi->zns_cgroup_account) {
 			unsigned short id;
 			struct mem_cgroup *memcg = NULL;
@@ -6253,6 +6268,7 @@ static inline bool check_suspend(struct zns_swap_info_struct *zi)
 	}
 
 	set_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
+        printk("[%s::%s::%d] lower free_zones=%d\n", __FILE__, __func__, __LINE__, free_zones);
 	return true;
 }
 static inline bool check_high_wmark(struct zns_swap_info_struct *zi)
@@ -6266,6 +6282,7 @@ static inline bool check_high_wmark(struct zns_swap_info_struct *zi)
 	free_zones = atomic_read(&zi->free_zones);
 
 	if (free_zones >= zi->high_wmark) {
+                printk("[%s::%s::%d] free_zones=%d\n", __FILE__, __func__, __LINE__, free_zones);
 		clear_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
 		return false;
 	}
@@ -6288,12 +6305,15 @@ static inline bool check_low_wmark(struct zns_swap_info_struct *zi)
 
 	free_zones = atomic_read(&zi->free_zones);
 
-	if (free_zones > zi->low_wmark)
+	if (free_zones > zi->low_wmark) {
 		return false;
+        }
 
+        printk("[%s::%s::%d] lower free_zones=%d\n", __FILE__, __func__, __LINE__, free_zones);
 	potential_free_zones = gc_calc_potential(zi);
 
 	if (potential_free_zones > 1) {
+                printk("[%s::%s::%d] potential_free_zones=%d\n", __FILE__, __func__, __LINE__, potential_free_zones);
 		set_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
 		return true;
 	}
@@ -6390,6 +6410,7 @@ again:
 			if (victim == -1)
 				return;
 			zi->rctx.from_zone = victim;
+                        printk("[%s::%s::%d] victim=%d\n", __FILE__, __func__, __LINE__, victim);
 		}
 		gc_move_zone_read(zi, victim);
 		fallthrough;
@@ -6496,6 +6517,7 @@ static void kznsd_try_to_sleep(struct zns_swap_info_struct *zi)
 static int kznsd(void *p) {
 	struct zns_swap_info_struct *zi = (struct zns_swap_info_struct *)p;
 
+        printk("[%s::%s::%d]\n", __FILE__, __func__, __LINE__);
 	set_freezable();
 	for ( ; ; ) {
 		bool ret;
