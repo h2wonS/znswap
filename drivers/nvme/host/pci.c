@@ -118,8 +118,6 @@ struct nvme_dev {
 	struct device *dev;
 	struct dma_pool *prp_page_pool;
 	struct dma_pool *prp_small_pool;
-	struct dma_pool *swap_md_page_pool;
-	struct dma_pool *swap_md_small_pool;
 	unsigned online_queues;
 	unsigned max_qid;
 	unsigned io_queues[HCTX_MAX_TYPES];
@@ -590,23 +588,6 @@ static void nvme_unmap_sg(struct nvme_dev *dev, struct request *req)
 	else
 		dma_unmap_sg(dev->dev, iod->sg, iod->nents, rq_dma_dir(req));
 }
-/*
-static void nvme_unmap_swap_md(struct nvme_dev *dev, struct request *req)
-{
-	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
-	int length = blk_rq_payload_bytes(req);
-	struct dma_pool *pool;
-	int nmd;
-
-	nmd = DIV_ROUND_UP(length, NVME_CTRL_PAGE_SIZE);
-	if (nmd <= (256 / 8)) {
-		pool = dev->swap_md_small_pool;
-	} else {
-		pool = dev->swap_md_page_pool;
-	}
-	dma_pool_free(pool, req->md_list, iod->meta_dma);
-}
-*/
 
 static void nvme_unmap_data(struct nvme_dev *dev, struct request *req)
 {
@@ -858,34 +839,10 @@ static blk_status_t nvme_setup_sgl_simple(struct nvme_dev *dev,
 	return BLK_STS_OK;
 }
 
-static bool alloc_swap_md(struct nvme_dev *dev, int nmd, struct request *req, struct nvme_command *cmnd)
-{
-	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
-	struct page_md *md_list;
-	struct dma_pool *pool;
-	dma_addr_t md_dma;
-
-	BUG_ON(nmd > 512);
-	if (nmd <= (256 / 8)) {
-		pool = dev->swap_md_small_pool;
-	} else {
-		pool = dev->swap_md_page_pool;
-	}
-
-	md_list = dma_pool_alloc(pool, GFP_ATOMIC, &md_dma);
-
-	if (!md_list)
-		return false;
-
-	iod->meta_dma = md_dma;
-	req->md_list = md_list;
-	cmnd->rw.metadata = cpu_to_le64(iod->meta_dma);
-	return true;
-}
-
 static blk_status_t nvme_swap_md(struct nvme_dev *dev, struct request *req,
 		struct nvme_command *cmnd)
 {
+#if 0
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
 	int length = blk_rq_payload_bytes(req);
 	struct scatterlist *sg = iod->sg;
@@ -954,6 +911,7 @@ static blk_status_t nvme_swap_md(struct nvme_dev *dev, struct request *req,
 		pe = get_page_stats(p);
 		dma_len = sg_dma_len(sg);
 	}
+#endif
 	return BLK_STS_OK;
 }
 static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
@@ -1015,6 +973,7 @@ out_free_sg:
 static blk_status_t nvme_map_metadata(struct nvme_dev *dev, struct request *req,
 		struct nvme_command *cmnd)
 {
+#if 0
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
 
 	iod->meta_dma = dma_map_bvec(dev->dev, rq_integrity_vec(req),
@@ -1022,6 +981,7 @@ static blk_status_t nvme_map_metadata(struct nvme_dev *dev, struct request *req,
 	if (dma_mapping_error(dev->dev, iod->meta_dma))
 		return BLK_STS_IOERR;
 	cmnd->rw.metadata = cpu_to_le64(iod->meta_dma);
+#endif
 	return BLK_STS_OK;
 }
 
@@ -1089,33 +1049,12 @@ static void nvme_pci_complete_rq(struct request *req)
 {
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
 	struct nvme_dev *dev = iod->nvmeq->dev;
-	struct dma_pool *pool = NULL;
-	dma_addr_t meta_dma;
-	struct page_md *md_list = NULL;
-
-	if (blk_met_rq(req)) {
-		struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
-		int length = blk_rq_payload_bytes(req);
-		int nmd;
-
-		nmd = DIV_ROUND_UP(length, NVME_CTRL_PAGE_SIZE);
-
-		if (nmd <= (256 / 8))
-			pool = dev->swap_md_small_pool;
-		else
-			pool = dev->swap_md_page_pool;
-
-		md_list = req->md_list;
-		meta_dma = iod->meta_dma;
-	}
 	if (blk_integrity_rq(req))
 		dma_unmap_page(dev->dev, iod->meta_dma,
 			       rq_integrity_vec(req)->bv_len, rq_data_dir(req));
 	if (blk_rq_nr_phys_segments(req))
 		nvme_unmap_data(dev, req);
 	nvme_complete_rq(req);
-	if (pool)
-		dma_pool_free(pool, md_list, meta_dma);
 }
 
 /* We read the CQE phase first to check if the rest of the entry is valid */
@@ -2675,23 +2614,6 @@ static int nvme_disable_prepare_reset(struct nvme_dev *dev, bool shutdown)
 	return 0;
 }
 
-static int nvme_setup_swap_md_pool(struct nvme_dev *dev)
-{
-	dev->swap_md_page_pool = dma_pool_create("swap md pages", dev->dev,
-						(8 * NVME_CTRL_PAGE_SIZE),
-						NVME_CTRL_PAGE_SIZE, 0);
-	if (!dev->swap_md_page_pool)
-		return -ENOMEM;
-
-	dev->swap_md_small_pool = dma_pool_create("swap md small pages", dev->dev,
-						NVME_CTRL_PAGE_SIZE / 2,
-						NVME_CTRL_PAGE_SIZE / 2, 0);
-	if (!dev->swap_md_small_pool) {
-		dma_pool_destroy(dev->swap_md_page_pool);
-		return -ENOMEM;
-	}
-	return 0;
-}
 static int nvme_setup_prp_pools(struct nvme_dev *dev)
 {
 	dev->prp_page_pool = dma_pool_create("prp list page", dev->dev,
@@ -2708,12 +2630,6 @@ static int nvme_setup_prp_pools(struct nvme_dev *dev)
 		return -ENOMEM;
 	}
 	return 0;
-}
-
-static void nvme_release_swap_md_pool(struct nvme_dev *dev)
-{
-	dma_pool_destroy(dev->swap_md_page_pool);
-	dma_pool_destroy(dev->swap_md_small_pool);
 }
 
 static void nvme_release_prp_pools(struct nvme_dev *dev)
@@ -3096,9 +3012,6 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	result = nvme_setup_prp_pools(dev);
 	if (result)
 		goto unmap;
-	result = nvme_setup_swap_md_pool(dev);
-	if (result)
-		goto release_prp_pools;
 
 	quirks |= check_vendor_combination_bug(pdev);
 
@@ -3143,8 +3056,6 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
  release_mempool:
 	mempool_destroy(dev->iod_mempool);
  release_pools:
-	nvme_release_swap_md_pool(dev);
- release_prp_pools:
 	nvme_release_prp_pools(dev);
  unmap:
 	nvme_dev_unmap(dev);
@@ -3211,7 +3122,6 @@ static void nvme_remove(struct pci_dev *pdev)
 	nvme_dev_remove_admin(dev);
 	nvme_free_queues(dev, 0);
 	nvme_release_prp_pools(dev);
-	nvme_release_swap_md_pool(dev);
 	nvme_dev_unmap(dev);
 	nvme_uninit_ctrl(&dev->ctrl);
 }

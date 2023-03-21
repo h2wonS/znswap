@@ -261,12 +261,6 @@ static void req_bio_endio(struct request *rq, struct bio *bio,
 			bio->bi_iter.bi_sector = rq->__sector + sector_offset;
 		}
 	}
-	if (req_op(rq) == REQ_OP_READ && blk_met_rq(rq)) {
-		bio->bi_page_md.mapping = page_md->mapping;
-		bio->bi_page_md.index = page_md->index;
-		bio->bi_page_md.accessed_bitmap = page_md->accessed_bitmap;
-		bio->bi_page_md.num_samples = page_md->num_samples;
-	}
 
 	/* don't actually finish bio if it's part of flush sequence */
 	if (bio->bi_iter.bi_size == 0 && !(rq->rq_flags & RQF_FLUSH_SEQ))

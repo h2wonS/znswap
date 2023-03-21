@@ -41,6 +41,7 @@ void end_swap_bio_write(struct bio *bio)
 		sector_t zone_start = (blk_queue_zone_sectors(q) >> 3) *
 			swp_offset(entry);
 		new_off = bio->bi_iter.bi_sector >> 3;
+
 		SetPageError(page);
 		slot = (unsigned long)new_off - (unsigned long)zone_start;
 		pr_info("%lu: Error on swap zone: %lu slot\n", swp_offset(entry), new_off);
@@ -66,7 +67,6 @@ void end_swap_bio_write(struct bio *bio)
 		 * after the update, and page private is inspected only if
 		 * writeback is off */
 		new_off = bio->bi_iter.bi_sector >> 3;
-
 		set_page_private(page, zns_tmp_swp_entry(swp_type(entry), new_off).val);
 		add_to_zswap(page);
 	} else if (PageSwapBacked(page) && PageSwapCache(page) && is_zns_swp_entry(entry)) {
@@ -388,8 +388,6 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 		bio->bi_iter.bi_sector = swap_page_sector(page);
 		bio->bi_opf |= REQ_OP_WRITE;
 	}
-
-
 
 	bio->bi_end_io = end_write_func;
 	bio_add_page(bio, page, thp_size(page), 0);

@@ -213,6 +213,7 @@ int add_to_zswap(struct page *page)
 	int zone;
 	pgoff_t zone_off;
 	int slot_count;
+        struct page_ext *pe;
 
 	VM_BUG_ON_PAGE(!PageUptodate(page), page);
 
@@ -222,13 +223,31 @@ int add_to_zswap(struct page *page)
 	type = swp_type(entry);
 	zone = zns_offset_to_zone(si->zns_swap, off);
 	zone_off = zns_offset_to_zone_off(si->zns_swap, off);
+
 	entry = zns_swp_entry(type, off);
 	WRITE_ONCE(si->zns_swap->swap_zones[zone].swap_map[zone_off], SWAP_HAS_CACHE);
+
+        pe = get_page_stats(page);
+        WRITE_ONCE(si->zns_swap->swap_zones[zone].mapping_arr[zone_off].index, page->index);
+        WRITE_ONCE(si->zns_swap->swap_zones[zone].mapping_arr[zone_off].mapping, page->mapping);
+        WRITE_ONCE(si->zns_swap->swap_zones[zone].mapping_arr[zone_off].accessed_bitmap, pe->accessed_bitmap);
+        WRITE_ONCE(si->zns_swap->swap_zones[zone].mapping_arr[zone_off].num_samples, pe->num_samples);
+
 	slot_count = atomic_inc_return(&si->zns_swap->swap_zones[zone].slot_count);
 	if (slot_count == si->zns_swap->zone_capacity) {
 		atomic_set(&zns_si->zns_swap->swap_zones[zone].open, 3);
 		atomic_inc(&zns_si->zns_swap->available_open_zones);
 	}
+#if 0
+                printk("[%s::%s::%d] SLOT_CNT=%d, index=0x%lx, mapping=0x%lx, zone=%d, zone_off=%ld(=0x%lx) z_idx=0x%lx, z_mapping=0x%lx, abitmap=%d numsamples=%d\n",
+                __FILE__, __func__, __LINE__, slot_count, page->index, page->mapping, zone, zone_off, zone_off, 
+                si->zns_swap->swap_zones[zone].mapping_arr[zone_off].index,
+                si->zns_swap->swap_zones[zone].mapping_arr[zone_off].mapping,
+                si->zns_swap->swap_zones[zone].mapping_arr[zone_off].accessed_bitmap,
+                si->zns_swap->swap_zones[zone].mapping_arr[zone_off].num_samples
+                );
+#endif
+
 
 	/* do not account the page in swap cache here */
 	err = _add_to_swap_cache(page, entry,
