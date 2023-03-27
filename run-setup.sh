@@ -4,7 +4,7 @@ sudo swapoff /dev/nvme1n1
 
 sudo nvme zns reset-zone -a /dev/nvme1n1
 
-echo 512 | sudo tee /sys/kernel/mm/zns_swap/nr_swap_zones
+echo 548 | sudo tee /sys/kernel/mm/zns_swap/nr_swap_zones
 
 #per-core policy
 echo 1 | sudo tee /sys/kernel/mm/zns_swap/zns_policy
