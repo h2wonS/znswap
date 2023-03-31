@@ -129,7 +129,9 @@ unsigned int blkdev_nr_zones(struct gendisk *disk)
 
 	if (!blk_queue_is_zoned(disk->queue))
 		return 0;
-	return (get_capacity(disk) + zone_sectors - 1) >> ilog2(zone_sectors);
+        if (likely(is_power_of_2(zone_sectors)))
+            return (get_capacity(disk) + zone_sectors - 1) >> ilog2(zone_sectors);
+        return div64_u64(get_capacity(disk) + zone_sectors - 1, zone_sectors);
 }
 EXPORT_SYMBOL_GPL(blkdev_nr_zones);
 
@@ -221,13 +223,6 @@ int blkdev_zone_mgmt(struct block_device *bdev, enum req_opf op,
 
 	if (end_sector <= sector || end_sector > capacity)
 		/* Out of range */
-		return -EINVAL;
-
-	/* Check alignment (handle eventual smaller last zone) */
-	if (sector & (zone_sectors - 1))
-		return -EINVAL;
-
-	if ((nr_sectors & (zone_sectors - 1)) && end_sector != capacity)
 		return -EINVAL;
 
 	while (sector < end_sector) {
@@ -445,12 +440,6 @@ static int blk_revalidate_zone_cb(struct blk_zone *zone, unsigned int idx,
 	 * smaller last zone.
 	 */
 	if (zone->start == 0) {
-		if (zone->len == 0 || !is_power_of_2(zone->len)) {
-			pr_warn("%s: Invalid zoned device with non power of two zone size (%llu)\n",
-				disk->disk_name, zone->len);
-			return -ENODEV;
-		}
-
 		args->zone_capacity_sectors = zone->capacity;
 		args->zone_sectors = zone->len;
 		args->nr_zones = (capacity + zone->len - 1) >> ilog2(zone->len);
