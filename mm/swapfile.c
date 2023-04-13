@@ -253,9 +253,9 @@ sector_t swap_page_sector(struct page *page)
 	sector_t sector;
 	pgoff_t offset;
 
-	if (sis->zns_swap)
+	if (sis->zns_swap){
 		return (sector_t)__page_file_index_zns(page) << (PAGE_SHIFT - 9);
-
+        }
 	offset = __page_file_index(page);
 	se = offset_to_swap_extent(sis, offset);
 	sector = se->start_block + (offset - se->start_page);
@@ -4400,7 +4400,6 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		zi->zone_size = blk_queue_zone_sectors(q) >> 3;
 		zi->zone_capacity = blk_queue_zone_capacity(q) >> 3;
 
-
 		zi->flags = 0;
 		zns_init_sysfs(zi);
 		zns_init_policy(zi, queue_max_open_zones(q));
@@ -4892,6 +4891,7 @@ pgoff_t __page_file_index_zns(struct page *page)
 	zi = st->zns_swap;
 	offset = ((offset / zi->zone_capacity)*zi->zone_size) +
 		(offset % zi->zone_capacity);
+
 	return offset;
 }
 EXPORT_SYMBOL_GPL(__page_file_index_zns);

@@ -129,8 +129,9 @@ unsigned int blkdev_nr_zones(struct gendisk *disk)
 
 	if (!blk_queue_is_zoned(disk->queue))
 		return 0;
-        if (likely(is_power_of_2(zone_sectors)))
+        if (likely(is_power_of_2(zone_sectors))){
             return (get_capacity(disk) + zone_sectors - 1) >> ilog2(zone_sectors);
+        }
         return div64_u64(get_capacity(disk) + zone_sectors - 1, zone_sectors);
 }
 EXPORT_SYMBOL_GPL(blkdev_nr_zones);
