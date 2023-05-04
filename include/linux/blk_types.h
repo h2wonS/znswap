@@ -277,6 +277,10 @@ struct bio {
 	struct bio_set		*bi_pool;
 	struct page_md_m	bi_page_md;
 
+        int     chunk_inner_cnt;
+        struct page_md_m chunk_map[47];
+        unsigned int offset; 
+
 	/*
 	 * We can inline a number of vecs at the end of the bio, to avoid
 	 * double allocations for a small number of bio_vecs. This member

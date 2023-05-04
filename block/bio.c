@@ -460,6 +460,7 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, unsigned short nr_iovecs,
 	}
 
 	bio->bi_pool = bs;
+        bio->chunk_inner_cnt = 0;
 	return bio;
 
 err_free:

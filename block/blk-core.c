@@ -1432,8 +1432,6 @@ bool blk_update_request(struct request *req, blk_status_t error,
 	int total_bytes;
 	struct page_md *v_page_md;
 
-	trace_block_rq_complete(req, blk_status_to_errno(error), nr_bytes);
-
 	if (!req->bio)
 		return false;
 

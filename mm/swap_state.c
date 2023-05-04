@@ -226,6 +226,11 @@ int add_to_zswap(struct page *page)
 
 	entry = zns_swp_entry(type, off);
 	WRITE_ONCE(si->zns_swap->swap_zones[zone].swap_map[zone_off], SWAP_HAS_CACHE);
+        /*
+        int i;
+        for(i=0; i<47; i++){
+	    WRITE_ONCE(si->zns_swap->swap_zones[zone].swap_map[zone_off + i * sizeof(struct page)], SWAP_HAS_CACHE);
+        }*/
 
         pe = get_page_stats(page);
         WRITE_ONCE(si->zns_swap->swap_zones[zone].mapping_arr[zone_off].index, page->index);
@@ -238,7 +243,7 @@ int add_to_zswap(struct page *page)
 		atomic_set(&zns_si->zns_swap->swap_zones[zone].open, 3);
 		atomic_inc(&zns_si->zns_swap->available_open_zones);
 	}
-#if 0
+#if 1
                 printk("[%s::%s::%d] SLOT_CNT=%d, index=0x%lx, mapping=0x%lx, zone=%d, zone_off=%ld(=0x%lx) z_idx=0x%lx, z_mapping=0x%lx, abitmap=%d numsamples=%d\n",
                 __FILE__, __func__, __LINE__, slot_count, page->index, page->mapping, zone, zone_off, zone_off, 
                 si->zns_swap->swap_zones[zone].mapping_arr[zone_off].index,

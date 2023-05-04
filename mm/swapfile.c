@@ -3679,6 +3679,9 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 			zi->rctx.buffer[i].index = 0;
 		}
 
+                kvfree(zi->chunks);
+                kvfree(zi->chunk_map);
+                
 		__free_pages(zi->rctx.buffer, ZNS_GC_ORDER);
 		for (i = 0; i < ZNS_GC_PAGES; i++)
 			bio_put(zi->rctx.move_bios[i]);
@@ -3992,6 +3995,7 @@ static unsigned long read_swap_header(struct swap_info_struct *p,
 	unsigned long swapfilepages;
 	unsigned long last_page;
 
+        printk("[%s::%s::%d] swap_header magic=%p (%ld)\n", __FILE__, __func__, __LINE__, swap_header, sizeof(swap_header));
 	if (memcmp("SWAPSPACE2", swap_header->magic.magic, 10)) {
 		pr_err("Unable to find swap-space signature\n");
 		return 0;
@@ -4450,6 +4454,17 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
                         }
                         for (j = 0; j < nr_cluster; j++)
                             spin_lock_init(&swap_zones[i].slot_lock[j]);
+                }
+
+                zi->chunk_map = kvcalloc(47, sizeof(struct page_md_m), GFP_KERNEL);
+                if(!zi->chunk_map){
+                    error = -ENOMEM;
+                    goto bad_swap;
+                }
+                zi->chunks = kvcalloc(47, sizeof(struct page), GFP_KERNEL);
+                if(!zi->chunks){
+                    error = -ENOMEM;
+                    goto bad_swap;
                 }
 
 		zi->gc_waiting_bitmap = bitmap_zalloc(zi->num_zones, GFP_KERNEL);
@@ -5919,20 +5934,6 @@ retry:
 		WRITE_ONCE(sz_src->mapping_arr[src_offset].index, 0);
 		WRITE_ONCE(sz_src->mapping_arr[src_offset].mapping, 0);
 		spin_unlock(&sz_src->slot_lock[src_cluster]);
-
-#if 0
-                printk("[%s::%s::%d] index=0x%lx, mapping=0x%lx, src_zone=%d, src_ofst=0x%lx, dst_zone=%d, dst_ofst=0x%lx, srcidx=0x%lx srcmap=0x%lx srcbmap=%d srcsam=%d || mov_idx=0x%lx, mov_map=0x%lx mov_bmap=%d mov_sam=%d || dst_idx=0x%lx, dst_mapping=0x%lx dstbmap=%d dstsam=%d\n", 
-                __FILE__, __func__, __LINE__, move_page->index, move_page->mapping, src_zone, src_offset, dst_zone, dst_offset,
-                zi->swap_zones[src_zone].mapping_arr[src_offset].index,
-                zi->swap_zones[src_zone].mapping_arr[src_offset].mapping,
-                zi->swap_zones[src_zone].mapping_arr[src_offset].accessed_bitmap,
-                zi->swap_zones[src_zone].mapping_arr[src_offset].num_samples,
-                move_index, move_mapping,  move_accessed_bitmap, move_num_samples,
-                zi->swap_zones[dst_zone].mapping_arr[dst_offset].index,
-                zi->swap_zones[dst_zone].mapping_arr[dst_offset].mapping,
-                zi->swap_zones[src_zone].mapping_arr[dst_offset].accessed_bitmap,
-                zi->swap_zones[src_zone].mapping_arr[dst_offset].num_samples);
-#endif
 
 		if (moved_ptes != map_count)
 			goto retry;

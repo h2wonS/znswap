@@ -324,7 +324,6 @@ struct reclaim_ctx {
 	enum status stat;
 	int from_zone;
 };
-
 struct swap_zone {
 	atomic_t count;		/* Number of available slots in a zone */
 	atomic_t slot_count;
@@ -375,7 +374,9 @@ struct zns_swap_info_struct {
 	atomic_t gc_in_use;
 	atomic_t free_zones;
 	unsigned long flags;
-	unsigned int start_bucket_order;
+        unsigned int start_bucket_order;
+        struct page_md_m *chunk_map;
+        struct page *chunks;
 };
 
 /* API structs */
@@ -421,9 +422,12 @@ extern void swap_inf(struct swap_i* swap);
 extern void register_policy(int(*pol)(u64, struct swappolicy*));
 /* Finish API structs */
 
+
 /*
  * The in-memory structure used to track swap areas.
  */
+
+
 struct swap_info_struct {
 	unsigned long	flags;		/* SWP_USED etc: see above */
 	signed short	prio;		/* swap priority of this type */
