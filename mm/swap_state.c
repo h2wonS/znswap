@@ -96,6 +96,8 @@ int __add_to_swap_cache(struct page *page, swp_entry_t entry,
 	if (st)
 		zi = st->zns_swap;
 
+        BUG_ON(!zi);
+
 	VM_BUG_ON_PAGE(!PageSwapBacked(page), page);
 
 	page_ref_add(page, nr);
@@ -179,6 +181,8 @@ void ___delete_from_swap_cache(struct page *page,
 	if (st)
 		zi = st->zns_swap;
 
+        BUG_ON(!zi);
+
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 	VM_BUG_ON_PAGE(!PageSwapCache(page), page);
 	VM_BUG_ON_PAGE(PageWriteback(page), page);
@@ -227,25 +231,24 @@ int add_to_zswap(struct page *page)
 	entry = zns_swp_entry(type, off);
 	WRITE_ONCE(si->zns_swap->swap_zones[zone].swap_map[zone_off], SWAP_HAS_CACHE);
 
+#if 1 
         pe = get_page_stats(page);
         WRITE_ONCE(si->zns_swap->swap_zones[zone].mapping_arr[zone_off].index, page->index);
         WRITE_ONCE(si->zns_swap->swap_zones[zone].mapping_arr[zone_off].mapping, page->mapping);
         WRITE_ONCE(si->zns_swap->swap_zones[zone].mapping_arr[zone_off].accessed_bitmap, pe->accessed_bitmap);
         WRITE_ONCE(si->zns_swap->swap_zones[zone].mapping_arr[zone_off].num_samples, pe->num_samples);
 
+#endif
+
 	slot_count = atomic_inc_return(&si->zns_swap->swap_zones[zone].slot_count);
 	if (slot_count == si->zns_swap->zone_capacity) {
 		atomic_set(&zns_si->zns_swap->swap_zones[zone].open, 3);
 		atomic_inc(&zns_si->zns_swap->available_open_zones);
 	}
-#if 0
-                printk("[%s::%s::%d] SLOT_CNT=%d, index=0x%lx, mapping=0x%lx, zone=%d, zone_off=%ld(=0x%lx) z_idx=0x%lx, z_mapping=0x%lx, abitmap=%d numsamples=%d\n",
-                __FILE__, __func__, __LINE__, slot_count, page->index, page->mapping, zone, zone_off, zone_off, 
-                si->zns_swap->swap_zones[zone].mapping_arr[zone_off].index,
-                si->zns_swap->swap_zones[zone].mapping_arr[zone_off].mapping,
-                si->zns_swap->swap_zones[zone].mapping_arr[zone_off].accessed_bitmap,
-                si->zns_swap->swap_zones[zone].mapping_arr[zone_off].num_samples
-                );
+
+#if 0 
+                printk("[%s::%s::%d] SLOT %d, mapping=0x%lx index=0x%lx, zone=%d, zone_off=0x%lx\n",
+                __FILE__, __func__, __LINE__, slot_count, page->mapping, page->index, zone, zone_off);
 #endif
 
 
@@ -293,8 +296,9 @@ int add_to_swap(struct page *page, struct swappolicy *sp,
 	VM_BUG_ON_PAGE(!PageUptodate(page), page);
 
 	entry = get_swap_page(page, sp, requires_flush);
-	if (!entry.val)
+	if (!entry.val){
 		return 0;
+        }
 
 	if (is_zns_tmp_swp_entry(entry)) {
 		/* tmp - do not support THP yet */
@@ -551,6 +555,8 @@ struct page *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 		 * that would confuse statistics.
 		 */
 		si = get_swap_device(entry);
+                if(!si->zns_swap)
+                    BUG();
 		if (!si)
 			return NULL;
 		page = find_get_page(swap_address_space(entry),
@@ -645,8 +651,9 @@ struct page *read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 	struct page *retpage = __read_swap_cache_async(entry, gfp_mask,
 			vma, addr, &page_was_allocated);
 
-	if (page_was_allocated)
+	if (page_was_allocated){
 		swap_readpage(retpage, do_poll);
+        }
 
 	return retpage;
 }

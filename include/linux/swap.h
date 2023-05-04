@@ -287,8 +287,11 @@ struct swap_cluster_list {
 
 /* 4MiB buffer */
 #define ZNS_GC_ORDER 10 /* page order */
+#define ZNS_WRITE_GRAN 48 /* 48 pages = 192KB */
 #define ZNS_GC_BYTES (1UL << (ZNS_GC_ORDER + PAGE_SHIFT))
+//#define ZNS_GC_BYTES 192 * 1024 * 21
 #define ZNS_GC_PAGES (ZNS_GC_BYTES >> 12)
+#define ZNS_GC_BIOS ((ZNS_GC_PAGES / ZNS_WRITE_GRAN) + 1UL)
 
 extern bool monitor_write_ratio;
 extern bool zns_en;
@@ -314,17 +317,26 @@ enum alloc_policy {
 	ZNS_POLICY_MODULE,
 };
 
+struct activate_info {
+        swp_entry_t src;
+        swp_entry_t dest;
+        struct page *move_page;
+};
+
 struct reclaim_ctx {
 	struct page *buffer;
 	atomic_t finished_read;
 	atomic_t finished_write;
 	unsigned int num_pages;
 	unsigned int last_pos;
-	struct bio *move_bios[ZNS_GC_PAGES];
+	struct bio *rmove_bios[ZNS_GC_PAGES];
 	enum status stat;
 	int from_zone;
+        int zone_num;
+        bool islastturn;
+        int padded;
+        struct activate_info *act_info;
 };
-
 struct swap_zone {
 	atomic_t count;		/* Number of available slots in a zone */
 	atomic_t slot_count;
@@ -375,7 +387,12 @@ struct zns_swap_info_struct {
 	atomic_t gc_in_use;
 	atomic_t free_zones;
 	unsigned long flags;
-	unsigned int start_bucket_order;
+        unsigned int start_bucket_order;
+        atomic_t current_gc_zone;
+        atomic_t resetting_zone;
+        atomic_t current_gc_zone_slot;
+        struct bio **swap_bios;
+        unsigned long bioflag;
 };
 
 /* API structs */
@@ -421,9 +438,12 @@ extern void swap_inf(struct swap_i* swap);
 extern void register_policy(int(*pol)(u64, struct swappolicy*));
 /* Finish API structs */
 
+
 /*
  * The in-memory structure used to track swap areas.
  */
+
+
 struct swap_info_struct {
 	unsigned long	flags;		/* SWP_USED etc: see above */
 	signed short	prio;		/* swap priority of this type */

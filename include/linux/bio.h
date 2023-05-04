@@ -116,11 +116,20 @@ static inline void *bio_data(struct bio *bio)
  */
 static inline bool bio_full(struct bio *bio, unsigned len)
 {
-	if (bio->bi_vcnt >= bio->bi_max_vecs)
+	if (bio->bi_vcnt >= bio->bi_max_vecs){
+          if(bio->bi_opf & REQ_SWAP_MET){
+                printk("[%s::%s::%d] {%p} bio->biMaxVec=%d\n",
+                __FILE__, __func__, __LINE__, bio, bio->bi_max_vecs);
+                dump_stack();
+          }
 		return true;
+        }
 
-	if (bio->bi_iter.bi_size > UINT_MAX - len)
+	if (bio->bi_iter.bi_size > UINT_MAX - len){
+                printk("[%s::%s::%d] UNITMAX-len=%d, len=%d bio->biiter_bi.size=%d\n",
+                __FILE__, __func__, __LINE__, UINT_MAX - len, len, bio->bi_iter.bi_size);
 		return true;
+        }
 
 	return false;
 }

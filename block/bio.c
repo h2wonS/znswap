@@ -252,6 +252,16 @@ void bio_init(struct bio *bio, struct bio_vec *table,
 
 	bio->bi_io_vec = table;
 	bio->bi_max_vecs = max_vecs;
+        bio->tmp = 0xffffffff;
+        bio->padded = 0;
+        bio->last_updated = jiffies;
+        bitmap_zero(bio->gc_bitmap, ZNS_WRITE_GRAN);
+        bitmap_zero(bio->pad_bitmap, ZNS_WRITE_GRAN);
+        int i;
+        for(i = 0; i<48; i++ ) {
+          bio->dest_entry[i] = 0;
+          bio->pad_list[i] = 0;
+        };
 }
 EXPORT_SYMBOL(bio_init);
 
@@ -267,7 +277,8 @@ EXPORT_SYMBOL(bio_init);
  */
 void bio_reset(struct bio *bio)
 {
-	bio_uninit(bio);
+	bio->padded = 0;
+        bio_uninit(bio);
 	memset(bio, 0, BIO_RESET_BYTES);
 	atomic_set(&bio->__bi_remaining, 1);
 }
@@ -861,19 +872,22 @@ bool __bio_try_merge_page(struct bio *bio, struct page *page,
 {
 	if (WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED)))
 		return false;
+        if(bio->bi_opf & REQ_SWAP_MET){
+            return false;
+        }
 
-	if (bio->bi_vcnt > 0) {
-		struct bio_vec *bv = &bio->bi_io_vec[bio->bi_vcnt - 1];
+        if (bio->bi_vcnt > 0) {
+            struct bio_vec *bv = &bio->bi_io_vec[bio->bi_vcnt - 1];
 
-		if (page_is_mergeable(bv, page, len, off, same_page)) {
-			if (bio->bi_iter.bi_size > UINT_MAX - len) {
-				*same_page = false;
-				return false;
-			}
-			bv->bv_len += len;
-			bio->bi_iter.bi_size += len;
-			return true;
-		}
+            if (page_is_mergeable(bv, page, len, off, same_page)) {
+                if (bio->bi_iter.bi_size > UINT_MAX - len) {
+                    *same_page = false;
+                    return false;
+                }
+                bv->bv_len += len;
+                bio->bi_iter.bi_size += len;
+                return true;
+            }
 	}
 	return false;
 }

@@ -767,8 +767,9 @@ int bdev_write_page(struct block_device *bdev, sector_t sector,
 	if (!ops->rw_page || bdev_get_integrity(bdev))
 		return -EOPNOTSUPP;
 	result = blk_queue_enter(bdev->bd_disk->queue, 0);
-	if (result)
+	if (result){
 		return result;
+        }
 
 	set_page_writeback(page);
 	result = ops->rw_page(bdev, sector + get_start_sect(bdev), page,

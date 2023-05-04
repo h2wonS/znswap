@@ -836,8 +836,9 @@ clear:
 		};
 
 		SetPageReclaim(page);
-		if (tmp_zns)
+		if (tmp_zns){
 			res = swap_writepage(page, &wbc);
+                }
 		else
 			res = mapping->a_ops->writepage(page, &wbc);
 
