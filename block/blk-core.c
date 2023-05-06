@@ -264,8 +264,9 @@ static void req_bio_endio(struct request *rq, struct bio *bio,
 	}
 
 	/* don't actually finish bio if it's part of flush sequence */
-	if (bio->bi_iter.bi_size == 0 && !(rq->rq_flags & RQF_FLUSH_SEQ))
+	if (bio->bi_iter.bi_size == 0 && !(rq->rq_flags & RQF_FLUSH_SEQ)){
 		bio_endio(bio);
+        }
 }
 
 void blk_dump_rq_flags(struct request *rq, char *msg)
@@ -1452,7 +1453,12 @@ bool blk_update_request(struct request *req, blk_status_t error,
 	while (req->bio) {
 		struct bio *bio = req->bio;
 		unsigned bio_bytes = min(bio->bi_iter.bi_size, nr_bytes);
-
+#if 0
+                if(req_op(req) == REQ_OP_ZONE_APPEND){
+                    printk("[%s:;%s:;%d] {%p} bio_bytes=%d nr_bytes=%d bisize=%d\n",
+                    __FILE__, __func__, __LINE__, bio, bio_bytes, nr_bytes, bio->bi_iter.bi_size);
+                }
+#endif
 		if (bio_bytes == bio->bi_iter.bi_size)
 			req->bio = bio->bi_next;
 
@@ -1463,7 +1469,12 @@ bool blk_update_request(struct request *req, blk_status_t error,
 		total_bytes += bio_bytes;
 		nr_bytes -= bio_bytes;
 		v_page_md++;
-
+#if 0
+                if(req_op(req) == REQ_OP_ZONE_APPEND){
+                    printk("[%s:;%s:;%d] {%p} nr_bytes=%d total_bytes=%d\n",
+                    __FILE__, __func__, __LINE__, bio, nr_bytes, total_bytes);
+                }
+#endif
 		if (!nr_bytes)
 			break;
 	}
