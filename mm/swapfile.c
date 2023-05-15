@@ -256,6 +256,9 @@ sector_t swap_page_sector(struct page *page)
 	if (sis->zns_swap){
 		return (sector_t)__page_file_index_zns(page) << (PAGE_SHIFT - 9);
         }
+        else{
+            printk("[%s::%s::%d] Fuck!!\n", __FILE__, __func__, __LINE__);
+        }
 	offset = __page_file_index(page);
 	se = offset_to_swap_extent(sis, offset);
 	sector = se->start_block + (offset - se->start_page);
@@ -400,6 +403,8 @@ inline spinlock_t *lock_zone_cap_offset(struct zns_swap_info_struct *zi,
 {
 	int zone;
 	pgoff_t zone_off;
+
+        BUG_ON(!zi);
 
 	zone = zns_offset_to_zone_cap(zi, offset);
 	zone_off = zns_offset_to_zone_off_cap(zi, offset);
@@ -802,8 +807,10 @@ static void swap_range_alloc(struct swap_info_struct *si, unsigned long offset,
 		WRITE_ONCE(si->highest_bit, si->highest_bit - nr_entries);
 	if (si->zns_swap)
 		atomic_long_add(nr_entries, &si->zns_swap->inuse_pages);
-	else
+	else{
+            BUG();
 		si->inuse_pages += nr_entries;
+        }
 	if (si->inuse_pages == si->pages) {
 		si->lowest_bit = si->max;
 		si->highest_bit = 0;
@@ -842,8 +849,10 @@ static void _swap_range_free(struct swap_info_struct *si, unsigned long offset,
 	atomic_long_add(nr_entries, &nr_swap_pages);
 	if (si->zns_swap)
 		atomic_long_sub(nr_entries, &si->zns_swap->inuse_pages);
-	else
+	else{
+            BUG();
 		si->inuse_pages -= nr_entries;
+        }
 	if (si->flags & SWP_BLKDEV)
 		swap_slot_free_notify =
 			si->bdev->bd_disk->fops->swap_slot_free_notify;
@@ -932,6 +941,8 @@ static inline bool allocate_free_zone(struct zns_swap_info_struct *zi,
 	int new_open;
 	int r;
 
+        BUG_ON(!zi);
+
 	/* "direct reclaim" path  - just wait until GC catches up*/
 
 	/* check and wait on bit if suspended */
@@ -950,6 +961,7 @@ static inline bool allocate_free_zone(struct zns_swap_info_struct *zi,
 
 		/* managed to get a potential zone */
 		if (free_zones == 0 && !is_gc) {
+                    BUG();
 			/* don't let other ppl busy wait */
 			pr_info("suspended\n");
 			set_bit(ZNS_SWAP_SUSPEND, &zi->flags);
@@ -974,6 +986,7 @@ static inline bool allocate_free_zone(struct zns_swap_info_struct *zi,
 	}
 
 	if (free_zones < zi->low_wmark && !is_gc){
+            BUG();
 		wakeup_kznsd(zi);
         }
 
@@ -1012,6 +1025,8 @@ static inline bool alloc_swap_slot(struct zns_swap_info_struct *zi,
 {
 	unsigned int swp_pos = 0;
 
+        BUG_ON(!zi);
+
 	swp_pos = atomic_inc_return(&zi->swap_zones[zone].count) - 1;
 
 	if (unlikely(swp_pos >= zi->zone_capacity)) {
@@ -1045,6 +1060,7 @@ void rec_zn(int zn) {
 	struct zns_swap_info_struct *zi;
 	/* yes, again, fugly */
 	zi = zns_si->zns_swap;
+        BUG_ON(!zi);
 	set_bit(zn, zi->module_waiting_bitmap);
 	smp_mb__after_atomic();
 	wakeup_kznsd(zi);
@@ -1566,6 +1582,8 @@ checks:
 	inc_cluster_info_page(si, si->cluster_info, offset);
 	unlock_cluster(ci);
 
+        if(!si->zns_swap)
+            BUG();
 	swap_range_alloc(si, offset, 1);
 	slots[n_ret++] = swp_entry(si->type, offset);
 
@@ -3679,9 +3697,6 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 			zi->rctx.buffer[i].index = 0;
 		}
 
-                kvfree(zi->chunks);
-                kvfree(zi->chunk_map);
-                
 		__free_pages(zi->rctx.buffer, ZNS_GC_ORDER);
 		for (i = 0; i < ZNS_GC_PAGES; i++)
 			bio_put(zi->rctx.move_bios[i]);
@@ -4454,17 +4469,6 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
                         }
                         for (j = 0; j < nr_cluster; j++)
                             spin_lock_init(&swap_zones[i].slot_lock[j]);
-                }
-
-                zi->chunk_map = kvcalloc(47, sizeof(struct page_md_m), GFP_KERNEL);
-                if(!zi->chunk_map){
-                    error = -ENOMEM;
-                    goto bad_swap;
-                }
-                zi->chunks = kvcalloc(47, sizeof(struct page), GFP_KERNEL);
-                if(!zi->chunks){
-                    error = -ENOMEM;
-                    goto bad_swap;
                 }
 
 		zi->gc_waiting_bitmap = bitmap_zalloc(zi->num_zones, GFP_KERNEL);
@@ -5353,6 +5357,9 @@ static void end_zone_reset(struct bio *bio)
 	unsigned long sz_num;
 	int emergency_zone;
 	struct zns_swap_info_struct *zi = zns_si->zns_swap;
+        if(!zi){
+            printk("[%s::%s::%d] Fuck Shit!!\n", __FILE__, __func__, __LINE__);
+        }
 
 	if (bio->bi_status) {
 		pr_info("some error in zone reset\n");
@@ -5406,6 +5413,7 @@ static void gc_reset_swap_zone(struct zns_swap_info_struct *zi, unsigned long n)
 	zi->swap_zones[n].reset_bio.bi_opf = REQ_OP_ZONE_RESET;
 	zi->swap_zones[n].reset_bio.bi_end_io = end_zone_reset;
 	zi->swap_zones[n].reset_bio.bi_private = (void *)n;
+        BUG();
 	submit_bio(&zi->swap_zones[n].reset_bio);
 }
 
@@ -6079,6 +6087,7 @@ retry_new_slot:
 		move_bio->bi_iter.bi_sector = zone_start;
 		move_bio->bi_end_io = end_zns_gc_write;
 
+                BUG();
 		bio_add_page(move_bio, move_page, PAGE_SIZE, 0);
 		submit_bio(move_bio);
 
@@ -6163,6 +6172,7 @@ retry:
 		/* to trigger locking next iter */
 		cluster = -1;
 
+                BUG();
 		if (first) {
 			first = false;
 			blk_start_plug(&plug);
@@ -6212,7 +6222,7 @@ retry:
 		move_bio->bi_end_io = end_zns_gc_read;
 
 		/* store in bio private the potential GC dest zone */
-
+                BUG();
 		bio_add_page(move_bio, move_page, PAGE_SIZE, 0);
 		submit_bio(move_bio);
 

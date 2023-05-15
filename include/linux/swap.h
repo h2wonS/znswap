@@ -375,8 +375,6 @@ struct zns_swap_info_struct {
 	atomic_t free_zones;
 	unsigned long flags;
         unsigned int start_bucket_order;
-        struct page_md_m *chunk_map;
-        struct page *chunks;
 };
 
 /* API structs */

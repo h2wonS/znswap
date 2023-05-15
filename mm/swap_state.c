@@ -96,6 +96,8 @@ int __add_to_swap_cache(struct page *page, swp_entry_t entry,
 	if (st)
 		zi = st->zns_swap;
 
+        BUG_ON(!zi);
+
 	VM_BUG_ON_PAGE(!PageSwapBacked(page), page);
 
 	page_ref_add(page, nr);
@@ -178,6 +180,8 @@ void ___delete_from_swap_cache(struct page *page,
 	st = swap_type_to_swap_info(swp_type(entry));
 	if (st)
 		zi = st->zns_swap;
+
+        BUG_ON(!zi);
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 	VM_BUG_ON_PAGE(!PageSwapCache(page), page);
@@ -292,8 +296,10 @@ int add_to_swap(struct page *page, struct swappolicy *sp,
 	VM_BUG_ON_PAGE(!PageUptodate(page), page);
 
 	entry = get_swap_page(page, sp, requires_flush);
-	if (!entry.val)
+	if (!entry.val){
+            BUG();
 		return 0;
+        }
 
 	if (is_zns_tmp_swp_entry(entry)) {
 		/* tmp - do not support THP yet */
@@ -306,6 +312,8 @@ int add_to_swap(struct page *page, struct swappolicy *sp,
 		set_page_dirty(page);
 		return 2;
 	}
+
+        printk(KERN_INFO "[%s::%s::%d] SHIT!!!\n", __FILE__, __func__, __LINE__);
 
 	/*
 	 * XArray node allocations from PF_MEMALLOC contexts could
@@ -550,6 +558,8 @@ struct page *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 		 * that would confuse statistics.
 		 */
 		si = get_swap_device(entry);
+                if(!si->zns_swap)
+                    BUG();
 		if (!si)
 			return NULL;
 		page = find_get_page(swap_address_space(entry),
@@ -644,8 +654,10 @@ struct page *read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 	struct page *retpage = __read_swap_cache_async(entry, gfp_mask,
 			vma, addr, &page_was_allocated);
 
-	if (page_was_allocated)
+	if (page_was_allocated){
+            printk("[%s::%s::%d] PAGEWASALLOC\n", __FILE__, __func__, __LINE__);
 		swap_readpage(retpage, do_poll);
+        }
 
 	return retpage;
 }
