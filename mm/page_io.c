@@ -30,51 +30,58 @@
 
 void end_swap_bio_write(struct bio *bio)
 {
-	struct page *page = bio_first_page_all(bio);
+        int i;
+	struct page *page;
 	unsigned long new_off;
 	swp_entry_t entry;
-	entry.val = page_private(page);
 
-	if (bio->bi_status) {
-		struct request_queue *q = bio->bi_bdev->bd_disk->queue;
-		long slot;
-		sector_t zone_start = (blk_queue_zone_sectors(q) >> 3) *
-			swp_offset(entry);
-		new_off = bio->bi_iter.bi_sector >> 3;
-		SetPageError(page);
-		slot = (unsigned long)new_off - (unsigned long)zone_start;
-		pr_info("%lu: Error on swap zone: %lu slot\n", swp_offset(entry), new_off);
-		BUG();
-		/*
-		 * We failed to write the page out to swap-space.
-		 * Re-dirty the page in order to avoid it being reclaimed.
-		 * Also print a dire warning that things will go BAD (tm)
-		 * very quickly.
-		 *
-		 * Also clear PG_reclaim to avoid rotate_reclaimable_page()
-		 */
-		set_page_dirty(page);
-		pr_alert_ratelimited("Write-error on swap-device (%u:%u:%llu)\n",
-				     MAJOR(bio_dev(bio)), MINOR(bio_dev(bio)),
-				     (unsigned long long)bio->bi_iter.bi_sector);
-		ClearPageReclaim(page);
-	}
+        if(bio->tmp != 0xbbbbbbbb && bio->tmp != 0xaaaaaaaa){
+            BUG();
+        }
+        for (i=0; i<(int)bio->bi_vcnt; i++){
+            page = bio->bi_io_vec[i].bv_page;
+            entry.val = page_private(page);
 
-	if (likely(PageSwapBacked(page) && PageSwapCache(page) && is_zns_tmp_swp_entry(entry))) {
+            if (bio->bi_status) {
+                struct request_queue *q = bio->bi_bdev->bd_disk->queue;
+                long slot;
+                sector_t zone_start = (blk_queue_zone_sectors(q) >> 3) *
+                    swp_offset(entry);
+                new_off = bio->bi_iter.bi_sector >> 3;
+                SetPageError(page);
+                slot = (unsigned long)new_off - (unsigned long)zone_start;
+                pr_info("%lu: Error on swap zone: %lu slot\n", swp_offset(entry), new_off);
+                BUG();
+                /*
+                 * We failed to write the page out to swap-space.
+                 * Re-dirty the page in order to avoid it being reclaimed.
+                 * Also print a dire warning that things will go BAD (tm)
+                 * very quickly.
+                 *
+                 * Also clear PG_reclaim to avoid rotate_reclaimable_page()
+                 */
+                set_page_dirty(page);
+                pr_alert_ratelimited("Write-error on swap-device (%u:%u:%llu)\n",
+                        MAJOR(bio_dev(bio)), MINOR(bio_dev(bio)),
+                        (unsigned long long)bio->bi_iter.bi_sector);
+                ClearPageReclaim(page);
+            }
 
-		/* no lock is required here, since the writeback is cleared
-		 * after the update, and page private is inspected only if
-		 * writeback is off */
-		new_off = bio->bi_iter.bi_sector >> 3;
+            if (likely(PageSwapBacked(page) && PageSwapCache(page) && is_zns_tmp_swp_entry(entry))) {
 
-		set_page_private(page, zns_tmp_swp_entry(swp_type(entry), new_off).val);
-		add_to_zswap(page);
-	} else if (PageSwapBacked(page) && PageSwapCache(page) && is_zns_swp_entry(entry)) {
-		BUG();
-	}
+                /* no lock is required here, since the writeback is cleared
+                 * after the update, and page private is inspected only if
+                 * writeback is off */
+                new_off = (bio->bi_iter.bi_sector >> 3) + i;
 
-	end_page_writeback(page);
-	bio_put(bio);
+                set_page_private(page, zns_tmp_swp_entry(swp_type(entry), new_off).val);
+                add_to_zswap(page);
+            } else if (PageSwapBacked(page) && PageSwapCache(page) && is_zns_swp_entry(entry)) {
+                BUG();
+            }
+            end_page_writeback(page);
+        }
+        bio_put(bio);
 }
 
 static void swap_slot_free_notify(struct page *page)
@@ -315,16 +322,26 @@ static void bio_associate_blkg_from_page(struct bio *bio, struct page *page)
 #define bio_associate_blkg_from_page(bio, page)		do { } while (0)
 #endif /* CONFIG_MEMCG && CONFIG_BLK_CGROUP */
 
+#define CHUNK_SIZE 192*1024
+#define CHUNK_BUF_SIZE 48
+
+struct bio *swap_bio[5000] = {0,};
+DEFINE_SPINLOCK(my_bio_lock);
+
 int __swap_writepage(struct page *page, struct writeback_control *wbc,
 		bio_end_io_t end_write_func)
 {
 	struct bio *bio;
 	int ret;
+
+        spin_lock(&my_bio_lock);
+
 	struct swap_info_struct *sis = page_swap_info(page);
 	swp_entry_t entry;
 
 	VM_BUG_ON_PAGE(!PageSwapCache(page), page);
-	if (data_race(sis->flags & SWP_FS_OPS)) {
+    	if (data_race(sis->flags & SWP_FS_OPS)) {
+            BUG();
 		struct kiocb kiocb;
 		struct file *swap_file = sis->swap_file;
 		struct address_space *mapping = swap_file->f_mapping;
@@ -362,35 +379,75 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 					   page_file_offset(page));
 		}
 		end_page_writeback(page);
+                spin_unlock(&my_bio_lock);
 		return ret;
 	}
 
 	ret = bdev_write_page(sis->bdev, swap_page_sector(page), page, wbc);
 	if (!ret) {
 		count_swpout_vm_event(page);
+                spin_unlock(&my_bio_lock);
 		return 0;
 	}
 
 	entry.val = page_private(page);
 
-	bio = bio_alloc(GFP_NOIO, 1);
-	bio_set_dev(bio, sis->bdev);
-	bio->bi_opf = REQ_SWAP | wbc_to_write_flags(wbc);
-
 	if (is_zns_tmp_swp_entry(entry)) {
-		sector_t zone_start =  (sis->zns_swap->zone_size << 3) *
-			swp_offset(entry);
-		bio->bi_opf |= REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
-		bio->bi_iter.bi_sector = zone_start;
+                unsigned long long swp_idx = swp_offset(entry);
+		sector_t zone_start =  (sis->zns_swap->zone_size << 3) * swp_idx;
+
+                /* if there's no bio in swp_idx, allocate the new bio for 192K align (48page) */
+                if(!swap_bio[swp_idx]){
+                    swap_bio[swp_idx] = bio_alloc(GFP_NOIO, 48);
+                    if(!swap_bio[swp_idx]){
+                        BUG();
+                        return -ENOMEM;
+                    }
+                    bio_set_dev(swap_bio[swp_idx], sis->bdev);
+	            swap_bio[swp_idx]->bi_opf = REQ_SWAP | wbc_to_write_flags(wbc);
+                    swap_bio[swp_idx]->bi_opf |= REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
+                    swap_bio[swp_idx]->bi_iter.bi_sector = zone_start;	
+                    swap_bio[swp_idx]->bi_end_io = end_write_func;
+                }
+
+                bio_add_page(swap_bio[swp_idx], page, thp_size(page), 0);
+
+                bio_associate_blkg_from_page(bio, page);
+                count_swpout_vm_event(page);
+                set_page_writeback(page);
+                unlock_page(page);
+
+                if( (int)(swap_bio[swp_idx]->bi_vcnt) == CHUNK_BUF_SIZE){
+                    /* if the bio_size is 192K, we are prepared to submit bio */
+                    struct bio *tmp_bio;
+                    tmp_bio = swap_bio[swp_idx];
+                    swap_bio[swp_idx] = NULL;
+                    tmp_bio->tmp = 0xbbbbbbbb;
+                    spin_unlock(&my_bio_lock);
+                    submit_bio(tmp_bio);
+                    return 0;
+                }
+                spin_unlock(&my_bio_lock);
+                return 0;
+
 	} else if (is_zns_swp_entry(entry)){
+                spin_unlock(&my_bio_lock);
 		BUG();
 	} else {
+            /* cns path */
+            spin_unlock(&my_bio_lock);
+            printk(KERN_INFO "CNS PATH! (%d) (%p)\n", zns_enabled(), sis->zns_swap);
+                bio = bio_alloc(GFP_NOIO, 1);
+	        bio_set_dev(bio, sis->bdev);
+	        bio->bi_opf = REQ_SWAP | wbc_to_write_flags(wbc);
+
 		bio->bi_iter.bi_sector = swap_page_sector(page);
 		bio->bi_opf |= REQ_OP_WRITE;
 	}
 
 	bio->bi_end_io = end_write_func;
 	bio_add_page(bio, page, thp_size(page), 0);
+        bio->tmp = 0xaaaaaaaa;
 
 	bio_associate_blkg_from_page(bio, page);
 	count_swpout_vm_event(page);

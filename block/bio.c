@@ -252,6 +252,7 @@ void bio_init(struct bio *bio, struct bio_vec *table,
 
 	bio->bi_io_vec = table;
 	bio->bi_max_vecs = max_vecs;
+        bio->tmp = 0xffffffff;
 }
 EXPORT_SYMBOL(bio_init);
 

@@ -1065,11 +1065,13 @@ static blk_status_t nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 		if (ret)
 			goto out_unmap_data;
 	}
+#if 0
 	if (blk_met_rq(req)) {
 		ret = nvme_swap_md(dev, req, &cmnd);
 		if (ret)
 			goto out_unmap_metadata;
-	}
+    	}
+#endif
 
 	blk_mq_start_request(req);
 	nvme_submit_cmd(nvmeq, &cmnd, bd->last);
@@ -1093,6 +1095,7 @@ static void nvme_pci_complete_rq(struct request *req)
 	dma_addr_t meta_dma;
 	struct page_md *md_list = NULL;
 
+#if 0
 	if (blk_met_rq(req)) {
 		struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
 		int length = blk_rq_payload_bytes(req);
@@ -1108,6 +1111,7 @@ static void nvme_pci_complete_rq(struct request *req)
 		md_list = req->md_list;
 		meta_dma = iod->meta_dma;
 	}
+#endif
 	if (blk_integrity_rq(req))
 		dma_unmap_page(dev->dev, iod->meta_dma,
 			       rq_integrity_vec(req)->bv_len, rq_data_dir(req));

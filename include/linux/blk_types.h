@@ -276,6 +276,7 @@ struct bio {
 
 	struct bio_set		*bi_pool;
 	struct page_md_m	bi_page_md;
+        int tmp;
 
 	/*
 	 * We can inline a number of vecs at the end of the bio, to avoid

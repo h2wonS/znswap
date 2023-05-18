@@ -261,13 +261,14 @@ static void req_bio_endio(struct request *rq, struct bio *bio,
 			bio->bi_iter.bi_sector = rq->__sector + sector_offset;
 		}
 	}
+#if 0
 	if (req_op(rq) == REQ_OP_READ && blk_met_rq(rq)) {
 		bio->bi_page_md.mapping = page_md->mapping;
 		bio->bi_page_md.index = page_md->index;
 		bio->bi_page_md.accessed_bitmap = page_md->accessed_bitmap;
 		bio->bi_page_md.num_samples = page_md->num_samples;
 	}
-
+#endif
 	/* don't actually finish bio if it's part of flush sequence */
 	if (bio->bi_iter.bi_size == 0 && !(rq->rq_flags & RQF_FLUSH_SEQ))
 		bio_endio(bio);
@@ -779,7 +780,7 @@ static inline blk_status_t blk_check_zone_append(struct request_queue *q,
 		return BLK_STS_NOTSUPP;
 
 	/* The bio sector must point to the start of a sequential zone */
-	if (pos & (blk_queue_zone_sectors(q) - 1) ||
+	if ((pos % blk_queue_zone_sectors(q)) ||
 	    !blk_queue_zone_is_seq(q, pos))
 		return BLK_STS_IOERR;
 
