@@ -986,7 +986,6 @@ static inline bool allocate_free_zone(struct zns_swap_info_struct *zi,
 	}
 
 	if (free_zones < zi->low_wmark && !is_gc){
-            BUG();
 		wakeup_kznsd(zi);
         }
 

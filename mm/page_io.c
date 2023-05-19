@@ -340,6 +340,7 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
     struct swap_info_struct *sis;
     int ret;
     swp_entry_t entry;
+    unsigned long flag;
     
     struct kiocb kiocb_;
     struct file *swap_file;
@@ -355,7 +356,7 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
     };
     struct iov_iter from;
 
-    spin_lock(&my_bio_lock);
+    spin_lock_irqsave(&my_bio_lock, flag);
 
     sis = page_swap_info(page);
     VM_BUG_ON_PAGE(!PageSwapCache(page), page);
@@ -370,7 +371,7 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 
         set_page_writeback(page);
         unlock_page(page);
-        spin_unlock(&my_bio_lock);
+        spin_unlock_irqrestore(&my_bio_lock, flag);
         ret = mapping->a_ops->direct_IO(&kiocb_, &from);
         if (ret == PAGE_SIZE) {
             count_vm_event(PSWPOUT);
@@ -398,7 +399,7 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
     ret = bdev_write_page(sis->bdev, swap_page_sector(page), page, wbc);
     if (!ret) {
         count_swpout_vm_event(page);
-        spin_unlock(&my_bio_lock);
+        spin_unlock_irqrestore(&my_bio_lock, flag);
         BUG();
         return 0;
     }
@@ -409,7 +410,7 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
         unsigned long long swp_idx = swp_offset(entry);
 
         if(!swap_bio[swp_idx]){
-            swap_bio[swp_idx] = bio_alloc(GFP_NOIO, 49);
+            swap_bio[swp_idx] = bio_alloc(GFP_NOIO, 48);
             if(!swap_bio[swp_idx]){
                 BUG();
                 return -ENOMEM;
@@ -475,22 +476,23 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
             printk(KERN_INFO "%s::%d %p %llx  %llx\n", __func__, __LINE__, new_bio, swp_idx, zone_start);
 #endif
             new_bio->tmp = 0xbbbbbbbb;
-            spin_unlock(&my_bio_lock);
+            spin_unlock_irqrestore(&my_bio_lock, flag);
             submit_bio(new_bio);
             return 0;
         }
 #if 0
         printk(KERN_INFO "%s::%d %p %llx  %llx\n", __func__, __LINE__, swap_bio[swp_idx], swp_idx, zone_start);
 #endif
-        spin_unlock(&my_bio_lock);
+        spin_unlock_irqrestore(&my_bio_lock, flag);
         return 0;
 
 
     } else if (is_zns_swp_entry(entry)){
-        spin_unlock(&my_bio_lock);
-        BUG();
+      spin_unlock_irqrestore(&my_bio_lock, flag);
+      BUG();
     } else {
 
+        BUG();
         swp_sec = swap_page_sector(page);
         swp_idx = swp_sec / (96*1024*2);
         //swp_idx = swp_offset(entry);
@@ -528,11 +530,11 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
             msleep(1000);
             BUG();
 
-            spin_unlock(&my_bio_lock);
+            spin_unlock_irqrestore(&my_bio_lock, flag);
             submit_bio(new_bio);
             return 0;
         }
-        spin_unlock(&my_bio_lock);
+        spin_unlock_irqrestore(&my_bio_lock, flag);
     }
     return 0;
 }
