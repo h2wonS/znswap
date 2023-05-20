@@ -38,13 +38,12 @@ void end_swap_bio_write(struct bio *bio)
     unsigned long new_off;
     swp_entry_t entry;
  
-    if(bio->tmp != 0xbbbbbbbb && bio->tmp != 0xaaaaaaaa){
-        msleep(1000);
-        BUG_ON(bio->tmp != 1);
+    if(bio->tmp != 0xbbbbbbbb){
+        BUG();
     }
     for(i = 0; i < (int)bio->bi_vcnt; i++){
         WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED));
-       cur_page = bio->bi_io_vec[i].bv_page;
+        cur_page = bio->bi_io_vec[i].bv_page;
         entry.val = page_private(cur_page);
 
         if (bio->bi_status) {
@@ -418,30 +417,10 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
 
             bio_set_dev(swap_bio[swp_idx], sis->bdev);
             swap_bio[swp_idx]->bi_opf = REQ_SWAP | wbc_to_write_flags(wbc);
-#if 0 
-            printk(KERN_INFO "%s::%d %p %llx\n", __func__, __LINE__, swap_bio[swp_idx], swp_idx);
-#endif
         }
 
         zone_start = (sis->zns_swap->zone_size << 3) *  swp_offset(entry);
 
-#if 0 
-        struct page_ext *pe;
-        pe = get_page_stats(page);
-
-        int cnt;
-        cnt = (int)swap_bio->bi_vcnt;
-
-        swap_bio->chunk_map[cnt].mapping = page->mapping;
-        swap_bio->chunk_map[cnt].index = page->index;
-        swap_bio->chunk_map[cnt].accessed_bitmap = pe->accessed_bitmap;
-        swap_bio->chunk_map[cnt].num_samples = pe->num_samples;
-        printk("[%s::%s::%d] bio=%p Cnt=%d pagemapping=0x%lx pageidx=0x%lx\n",
-                __FILE__, __func__, __LINE__, swap_bio, 
-                cnt+1, 
-                swap_bio->chunk_map[cnt].mapping, 
-                swap_bio->chunk_map[cnt].index); 
-#endif
         swap_bio[swp_idx]->bi_opf |= REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
         swap_bio[swp_idx]->bi_iter.bi_sector = zone_start;
 
@@ -454,89 +433,44 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
         unlock_page(page);
 
         if((int)(swap_bio[swp_idx]->bi_vcnt) == CHUNK_BUF_SIZE){
-            /*
-               struct page *map_page;
-               map_page = alloc_page(GFP_KERNEL);
-               if(!map_page) return -ENOMEM;
-               int i;
-               for(i=0; i<CHUNK_BUF_SIZE; i++){
-               struct page_md_m *p = page_address(map_page) + i;
-               memcpy(p, &(swap_bio->chunk_map[i]), sizeof(struct page_md_m));
-               }
-
-               bio_add_page(swap_bio, map_page, PAGE_SIZE, 0);
-               __free_page(map_page);
-               */
 
             struct bio* new_bio;
             new_bio = swap_bio[swp_idx];
             swap_bio[swp_idx] = NULL;
 
-#if 0
-            printk(KERN_INFO "%s::%d %p %llx  %llx\n", __func__, __LINE__, new_bio, swp_idx, zone_start);
-#endif
             new_bio->tmp = 0xbbbbbbbb;
             spin_unlock_irqrestore(&my_bio_lock, flag);
             submit_bio(new_bio);
             return 0;
         }
-#if 0
-        printk(KERN_INFO "%s::%d %p %llx  %llx\n", __func__, __LINE__, swap_bio[swp_idx], swp_idx, zone_start);
-#endif
         spin_unlock_irqrestore(&my_bio_lock, flag);
         return 0;
-
-
     } else if (is_zns_swp_entry(entry)){
       spin_unlock_irqrestore(&my_bio_lock, flag);
       BUG();
     } else {
+      // CNS PATH
+      spin_unlock_irqrestore(&my_bio_lock, flag);
+      BUG();
+      struct bio *bio; 
+      bio = bio_alloc(GFP_NOIO, 1);
+      bio->bi_iter.bi_sector = swap_page_sector(page);
+      bio_set_dev(bio, sis->bdev);
+      bio->bi_opf = REQ_SWAP | wbc_to_write_flags(wbc);
 
-        BUG();
-        swp_sec = swap_page_sector(page);
-        swp_idx = swp_sec / (96*1024*2);
-        //swp_idx = swp_offset(entry);
+      bio->bi_opf |= REQ_OP_WRITE;
+      bio->bi_end_io = end_write_func;
 
-        if(!swap_bio[swp_idx]){
-            swap_bio[swp_idx] = bio_alloc(GFP_NOIO, 49);
-            if(!swap_bio[swp_idx]) {
-                BUG();
-                return -ENOMEM;
-            }
-            swap_bio[swp_idx]->bi_iter.bi_sector = swap_page_sector(page);
-            bio_set_dev(swap_bio[swp_idx], sis->bdev);
-            swap_bio[swp_idx]->bi_opf = REQ_SWAP | wbc_to_write_flags(wbc);
+      bio_add_page(bio, page, PAGE_SIZE, 0);
 
-            swap_bio[swp_idx]->bi_opf |= REQ_OP_WRITE;
-            swap_bio[swp_idx]->bi_end_io = end_write_func;
+      bio_associate_blkg_from_page(bio, page);
+      count_swpout_vm_event(page);
+      set_page_writeback(page);
+      unlock_page(page);
 
-            printk(KERN_INFO "%s::%d %p %llx\n", __func__, __LINE__, swap_bio[swp_idx], swp_idx);
-        }
-
-        bio_add_page(swap_bio[swp_idx], page, PAGE_SIZE, 0);
-
-        bio_associate_blkg_from_page(swap_bio[swp_idx], page);
-        count_swpout_vm_event(page);
-        set_page_writeback(page);
-        unlock_page(page);
-
-        if((int)(swap_bio[swp_idx]->bi_vcnt) == CHUNK_BUF_SIZE){
-            struct bio* new_bio;
-            new_bio = swap_bio[swp_idx];
-            swap_bio[swp_idx] = NULL;
-            new_bio->tmp = 0xaaaaaaaa;
-            printk(KERN_INFO "%s::%d %p %llx\n", __func__, __LINE__, new_bio, swp_idx);
-
-            msleep(1000);
-            BUG();
-
-            spin_unlock_irqrestore(&my_bio_lock, flag);
-            submit_bio(new_bio);
-            return 0;
-        }
-        spin_unlock_irqrestore(&my_bio_lock, flag);
+      submit_bio(bio);
+      return 0;
     }
-    return 0;
 }
 
 int swap_readpage(struct page *page, bool synchronous)
