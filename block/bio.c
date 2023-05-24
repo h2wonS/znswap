@@ -253,6 +253,12 @@ void bio_init(struct bio *bio, struct bio_vec *table,
 	bio->bi_io_vec = table;
 	bio->bi_max_vecs = max_vecs;
         bio->tmp = 0xffffffff;
+        bio->padded = 0;
+        int i;
+        for(i = 0; i<48; i++ ) {
+          bio->dest_entry[i] = 0;
+          bio->pad_list[i] = 0;
+        };
 }
 EXPORT_SYMBOL(bio_init);
 
@@ -268,7 +274,8 @@ EXPORT_SYMBOL(bio_init);
  */
 void bio_reset(struct bio *bio)
 {
-	bio_uninit(bio);
+	bio->padded = 0;
+        bio_uninit(bio);
 	memset(bio, 0, BIO_RESET_BYTES);
 	atomic_set(&bio->__bi_remaining, 1);
 }

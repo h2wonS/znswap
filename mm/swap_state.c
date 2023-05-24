@@ -297,7 +297,6 @@ int add_to_swap(struct page *page, struct swappolicy *sp,
 
 	entry = get_swap_page(page, sp, requires_flush);
 	if (!entry.val){
-            BUG();
 		return 0;
         }
 

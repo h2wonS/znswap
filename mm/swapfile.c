@@ -961,9 +961,8 @@ static inline bool allocate_free_zone(struct zns_swap_info_struct *zi,
 
 		/* managed to get a potential zone */
 		if (free_zones == 0 && !is_gc) {
-                    BUG();
 			/* don't let other ppl busy wait */
-			pr_info("suspended\n");
+			pr_info("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! suspended\n");
 			set_bit(ZNS_SWAP_SUSPEND, &zi->flags);
 			smp_mb__after_atomic();
 			wakeup_kznsd(zi);
@@ -1029,6 +1028,7 @@ static inline bool alloc_swap_slot(struct zns_swap_info_struct *zi,
 	swp_pos = atomic_inc_return(&zi->swap_zones[zone].count) - 1;
 
 	if (unlikely(swp_pos >= zi->zone_capacity)) {
+          printk(KERN_INFO "{Zone# %d} swp_pos = %d\n", zone, swp_pos);
 		atomic_dec(&zi->swap_zones[zone].count);
 		return false;
 	}
@@ -1039,6 +1039,7 @@ static inline bool alloc_swap_slot(struct zns_swap_info_struct *zi,
 		int cur_zone_slot;
 
 		if(unlikely(is_gc_zone)) {
+                  printk("FUCK!!! %s::%d\n", __func__, __LINE__);
 			atomic_set(&zi->gc_in_use, -1);
 			return true;
 		}
@@ -1314,7 +1315,7 @@ static inline int get_zone_from_slot(struct zns_swap_info_struct *zi,
 			return -1;
 		}
 
-		cur_zone = atomic_read(&zi->open_zones[cur_zone_slot]);
+                cur_zone = atomic_read(&zi->open_zones[cur_zone_slot]);
 	}
 
 	if (unlikely(atomic_read(&zi->swap_zones[cur_zone].open) == 1)) {
@@ -1381,6 +1382,8 @@ retry_new_zone:
 	gc_zone_num = atomic_read(&zi->gc_in_use);
 	if (unlikely(gc_zone_num >= 0)) {
 		if(likely(alloc_swap_slot(zi, gc_zone_num, NULL, true))) {
+                  printk(KERN_INFO "We allocate New GC ZONE #%d\n", gc_zone_num);
+                  atomic_set(&zi->current_gc_zone, gc_zone_num);
 			return gc_zone_num;
 		}
 	}
@@ -1394,6 +1397,7 @@ retry_new_zone:
 
 	/* gc will not allocate a new zone */
 	for (retry_iter = 0; retry_iter < zi->max_open_zones; retry_iter++) {
+          //isGC -> True
 		gc_zone_num = get_zone_from_slot(zi, gc_zone_num_slot, true);
 
 		if (unlikely(gc_zone_num == -1))
@@ -1402,7 +1406,9 @@ retry_new_zone:
 		if(unlikely(!alloc_swap_slot(zi, gc_zone_num, NULL, false)))
 			goto retry_next_slot;
 
+                printk(KERN_INFO "We reuse opened GC ZONE #%d\n", gc_zone_num);
 		found = true;
+                atomic_set(&zi->current_gc_zone, gc_zone_num);
 		break;
 
 retry_next_slot:
@@ -1437,11 +1443,13 @@ static int zns_swap_map_slots(struct swap_info_struct *si, swp_entry_t slots[],
 		cur_zone_slot = get_zns_zone_slot(zi, page, sp);
 		VM_BUG_ON(cur_zone_slot >= zi->max_open_zones);
 
+          // isGC -> False
 		zone = get_zone_from_slot(zi, cur_zone_slot, false);
 
-		if (unlikely(zone == -1)) {
-			if (retry == 3)
+		if (unlikely(zone == -1 || zone == atomic_read(&zi->current_gc_zone))) {
+			if (retry == 3){
 				return 0;
+                        }
 
 			cond_resched();
 			retry++;
@@ -1452,6 +1460,7 @@ static int zns_swap_map_slots(struct swap_info_struct *si, swp_entry_t slots[],
 			slots[nr_ret++] = zns_tmp_swp_entry(si->type, zone);
 			break;
 		} else {
+                  printk("[%s::%d] Sleep! IsNOTGCZONE Zone=%d\n", __func__, __LINE__, zone);
 			cond_resched();
 		}
 	}
@@ -1752,8 +1761,9 @@ int get_zns_swap_page(struct swap_info_struct *si, swp_entry_t swp_entries[],
 	atomic_long_sub(1UL, &nr_swap_pages);
 	n_ret = zns_swap_map_slots(si, swp_entries, page, sp, requires_flush);
 
-	if (!n_ret)
+	if (!n_ret){
 		atomic_long_add(1UL, &nr_swap_pages);
+        }
 noswap:
 	return n_ret;
 }
@@ -4420,7 +4430,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 
 		zi->flags = 0;
 		zns_init_sysfs(zi);
-		zns_init_policy(zi, queue_max_open_zones(q));
+		zns_init_policy(zi, 384);
 		pr_info("Free zones %d\n", atomic_read(&zi->free_zones));
 
 		maxpages = zi->zone_capacity * zi->num_zones;
@@ -5390,8 +5400,10 @@ static void end_zone_reset(struct bio *bio)
 }
 
 void wakeup_kznsd (struct zns_swap_info_struct *zi) {
-	if (!waitqueue_active(&zi->gc_wait))
+	if (!waitqueue_active(&zi->gc_wait)){
+          printk("INACTIVE WAITQ\n");
 		return;
+        }
 	wake_up_interruptible(&zi->gc_wait);
 }
 
@@ -5406,13 +5418,13 @@ static void gc_reset_swap_zone(struct zns_swap_info_struct *zi, unsigned long n)
 	if (!invalids)
 		return;
 
+        printk(KERN_INFO "[%s::%d] RESET SWAP ZONE %ld\n", __func__, __LINE__, n);
 	bio_reset(&zi->swap_zones[n].reset_bio);
 	bio_set_dev(&zi->swap_zones[n].reset_bio, zi->si->bdev);
 	zi->swap_zones[n].reset_bio.bi_iter.bi_sector = n * (zi->zone_size << 3);
 	zi->swap_zones[n].reset_bio.bi_opf = REQ_OP_ZONE_RESET;
 	zi->swap_zones[n].reset_bio.bi_end_io = end_zone_reset;
 	zi->swap_zones[n].reset_bio.bi_private = (void *)n;
-        BUG();
 	submit_bio(&zi->swap_zones[n].reset_bio);
 }
 
@@ -5709,83 +5721,114 @@ static void end_zns_gc_write(struct bio *bio)
 	struct zns_swap_info_struct *zi;
 	swp_entry_t entry;
 
-	page = bio_first_page_all(bio);
-	entry.val = page_private(page);
+        int i;
+#if 1 
+        printk(KERN_INFO "[%s::%d] {BIO: %p} biSector=%lld newzone=%lld new_zone_off=%lld\n", 
+        __func__, __LINE__, bio,  bio->bi_iter.bi_sector, (bio->bi_iter.bi_sector >> 3)/24576, (bio->bi_iter.bi_sector >> 3) % 24576);
+#endif
+        for(i = 0; i < bio->bi_vcnt; i++){
+          if (bio->padded){
+            if (i == (bio->bi_vcnt - bio->padded)){
+              printk("isPadded bio -> padded %d pages in vcnt=%d pagesWrite=%d\n", bio->padded, bio->bi_vcnt, pages_write);
+              int j;
+              for(j=0; j<bio->padded; j++){
+                free_page(bio->pad_list[j]);
+              }
+              break;
+            }
+          }
+          page = bio->bi_io_vec[i].bv_page;
+          entry.val = page_private(page);
 
-	si = swap_type_to_swap_info(swp_type(entry));
-	zi = si->zns_swap;
+          si = swap_type_to_swap_info(swp_type(entry));
+          zi = si->zns_swap;
 
-	new_off = bio->bi_iter.bi_sector >> 3;
-	new_zone = new_off / zi->zone_size;
-	new_zone_off = new_off % zi->zone_size;
-        
-	if (bio->bi_status) {
-		pr_info("Error writing to disk during GC zone %d slotc %u slot count %u max %u open %d\n",
-				new_zone,
-				atomic_read(&zi->swap_zones[new_zone].count),
-				atomic_read(&zi->swap_zones[new_zone].slot_count),
-				zi->zone_capacity,
-				atomic_read(&zi->swap_zones[new_zone].open));
-		BUG();
-	}
+          new_off = (bio->bi_iter.bi_sector >> 3) + i;
 
-	new_off = (new_zone * zi->zone_capacity) + new_zone_off;
-	entry = swp_entry(swp_type(entry), new_off);
-	WRITE_ONCE(bio->bi_private, (void *)entry.val);
+          new_zone = new_off / zi->zone_size;
+          new_zone_off = new_off % zi->zone_size;
 
-	pages_write = atomic_inc_return(&zi->rctx.finished_write);
-	slot_count = atomic_inc_return(&si->zns_swap->swap_zones[new_zone].slot_count);
+          if (bio->bi_status) {
+            pr_info("{%p} %dth Page :: Error writing to disk during GC zone %d slotc %u slot count %u max %u open %d\n",
+                bio,
+                i,
+                new_zone,
+                atomic_read(&zi->swap_zones[new_zone].count),
+                atomic_read(&zi->swap_zones[new_zone].slot_count),
+                zi->zone_capacity,
+                atomic_read(&zi->swap_zones[new_zone].open));
+            BUG();
+          }
 
-	if (slot_count == zi->zone_capacity) {
+          new_off = (new_zone * zi->zone_capacity) + new_zone_off;
+          entry = swp_entry(swp_type(entry), new_off);
 
-		atomic_set(&zns_si->zns_swap->swap_zones[new_zone].open, 3);
-		atomic_inc(&zns_si->zns_swap->available_open_zones);
-	}
+          // write returned LBA of zone-append to bio->bi_private field
+          // to update the new offset of reclaimed page
+          // we use 192 granularity of Hynix ZNS, so we need array of this
+          bio->dest_entry[i] = entry.val;
 
-	if (pages_write == zi->rctx.num_pages)
-		wakeup_kznsd(zi);
+          pages_write = atomic_inc_return(&zi->rctx.finished_write);
+          slot_count = atomic_inc_return(&si->zns_swap->swap_zones[new_zone].slot_count);
+
+          if (slot_count == zi->zone_capacity) {
+            printk(KERN_INFO "[%s::%d] FUCK!!!\n", __func__, __LINE__);
+            atomic_set(&zns_si->zns_swap->swap_zones[new_zone].open, 3);
+            atomic_inc(&zns_si->zns_swap->available_open_zones);
+          }
+
+        }
+          if (pages_write == zi->rctx.num_pages){
+          printk(KERN_INFO "[%s::%d] Wakeup KZNS BIO %p, %dthPage\n", __func__, __LINE__, bio, i);
+            wakeup_kznsd(zi);
+          }
 }
 
 static void end_zns_gc_read(struct bio *bio)
 {
-	struct page *page = bio_first_page_all(bio);
+	struct page *page;
 	struct swap_info_struct *si;
 	struct zns_swap_info_struct *zi;
 	swp_entry_t entry;
 	int pages_read;
         pgoff_t zone_off;
         int zone;
+        int i;
 
-	/* get src addr from private */
-	entry.val = page_private(page);
+        if (bio->bi_status) {
+          pr_info("Error reading from disk during GC\n");
+          BUG();
+        }
 
-	si = swap_type_to_swap_info(swp_type(entry));
-	zi = si->zns_swap;
+        for(i = 0; i < bio->bi_vcnt; i++){
+          page = bio->bi_io_vec[i].bv_page;          
+          /* get src addr from private */
+          entry.val = page_private(page);
 
-        zone = zns_offset_to_zone_cap(zi, swp_offset(entry));
-        zone_off = zns_offset_to_zone_off_cap(zi, swp_offset(entry));
+          si = swap_type_to_swap_info(swp_type(entry));
+          zi = si->zns_swap;
 
-	if (bio->bi_status) {
-		pr_info("Error reading from disk during GC\n");
-		BUG();
-	}
-        
-	if (bio->bi_opf & REQ_SWAP_MET) {
-		struct page_ext *pe;
+          zone = zns_offset_to_zone_cap(zi, swp_offset(entry));
+          zone_off = zns_offset_to_zone_off_cap(zi, swp_offset(entry));
 
-		pe = get_page_stats(page);
+          if (bio->bi_opf & REQ_SWAP_MET) {
+            struct page_ext *pe;
+            pe = get_page_stats(page);
 
-		page->index = zi->swap_zones[zone].mapping_arr[zone_off].index;
-		page->mapping = zi->swap_zones[zone].mapping_arr[zone_off].mapping;
-		pe->accessed_bitmap = zi->swap_zones[zone].mapping_arr[zone_off].accessed_bitmap;
-		pe->num_samples = zi->swap_zones[zone].mapping_arr[zone_off].num_samples;
-		BUG_ON(!page->mapping);
-	}
-        
+            page->index = zi->swap_zones[zone].mapping_arr[zone_off].index;
+            page->mapping = zi->swap_zones[zone].mapping_arr[zone_off].mapping;
+            pe->accessed_bitmap = zi->swap_zones[zone].mapping_arr[zone_off].accessed_bitmap;
+            pe->num_samples = zi->swap_zones[zone].mapping_arr[zone_off].num_samples;
+            BUG_ON(!page->mapping);
+          }
+
 	pages_read = atomic_inc_return(&zi->rctx.finished_read);
+        }
 
-	if (pages_read == zi->rctx.num_pages)
+	if (pages_read == zi->rctx.num_pages){
+          printk(KERN_INFO "[%s::%d] Wakeup KZNS BIO %p, %dthPage\n", __func__, __LINE__, bio, i);
 		wakeup_kznsd(zi);
+        }
 
 }
 
@@ -5819,7 +5862,7 @@ static bool gc_eval_swap_map(struct zns_swap_info_struct *zi,
 
 static void gc_move_zone_activate(struct zns_swap_info_struct *zi)
 {
-	int i;
+	int i, j;
 	int num_pages;
 	struct bio *move_bio;
 	swp_entry_t dst_addr, src_addr;
@@ -5839,123 +5882,150 @@ static void gc_move_zone_activate(struct zns_swap_info_struct *zi)
         unsigned int move_num_samples;
 
 	num_pages = zi->rctx.num_pages;
-
-	for (i = 0; i < num_pages; i++) {
-
+        BUG_ON(!(num_pages / ZNS_WRITE_GRAN));
+        
+	for (i = 0; i <= (num_pages / ZNS_WRITE_GRAN); i++) {
 		retry = 0;
+                printk("i=%d numPages=%d\n", i, num_pages);
 		move_bio = zi->rctx.move_bios[i];
-		move_page = bio_first_page_all(move_bio);
-		src_addr.val = page_private(move_page);
-		dst_addr.val = (unsigned long)move_bio->bi_private;
 
-		src_zone = zns_offset_to_zone_cap(zi, swp_offset(src_addr));
-		src_offset = zns_offset_to_zone_off_cap(zi, swp_offset(src_addr));
+                for(j = 0; j < move_bio->bi_vcnt; j++){
+                  if(move_bio->padded){
+                    if(j == (move_bio->bi_vcnt - move_bio->padded)){
+                      printk("isPadded bio -> padded %d pages in vcnt=%d %dthPage\n", move_bio->padded, move_bio->bi_vcnt, j);
+                      break;
+                    }
+                  }
+                  move_page = move_bio->bi_io_vec[j].bv_page;
+                  src_addr.val = page_private(move_page);
+                  dst_addr.val = move_bio->dest_entry[j];
 
-		dst_zone = zns_offset_to_zone_cap(zi, swp_offset(dst_addr));
-		dst_offset = zns_offset_to_zone_off_cap(zi, swp_offset(dst_addr));
+                  src_zone = zns_offset_to_zone_cap(zi, swp_offset(src_addr));
+                  src_offset = zns_offset_to_zone_off_cap(zi, swp_offset(src_addr));
 
-		sz_src = &zi->swap_zones[src_zone];
-		sz_dst = &zi->swap_zones[dst_zone];
+                  dst_zone = zns_offset_to_zone_cap(zi, swp_offset(dst_addr));
+                  dst_offset = zns_offset_to_zone_off_cap(zi, swp_offset(dst_addr));
+#if 0 
+                  printk(KERN_INFO "[%s::%d] %dthBIO(%p) %dthPage szone=%d soff=%lx || (dst_addr=%lx(%lx)) dzone=%d doff=%lx\n",
+                  __func__, __LINE__, i, move_bio, j, src_zone, src_offset, dst_addr.val, move_bio->dest_entry[j], dst_zone, dst_offset);
+#endif
+                  BUG_ON(dst_zone < 0);
 
-		src_cluster = src_offset / SWAPFILE_CLUSTER;
-		dst_cluster = dst_offset / SWAPFILE_CLUSTER;
+                  sz_src = &zi->swap_zones[src_zone];
+                  sz_dst = &zi->swap_zones[dst_zone];
+
+                  src_cluster = src_offset / SWAPFILE_CLUSTER;
+                  dst_cluster = dst_offset / SWAPFILE_CLUSTER;
 retry:
-		/* lock swap cluster so zap cannot free VMA from under us */
-		spin_lock(&sz_src->slot_lock[src_cluster]);
-		map_count = READ_ONCE(sz_src->swap_map[src_offset]);
- 
-                move_index = READ_ONCE(sz_src->mapping_arr[src_offset].index);
-                move_mapping = READ_ONCE(sz_src->mapping_arr[src_offset].mapping);              
-                move_accessed_bitmap = READ_ONCE(sz_src->mapping_arr[src_offset].accessed_bitmap);              
-                move_num_samples = READ_ONCE(sz_src->mapping_arr[src_offset].num_samples);              
+                  /* lock swap cluster so zap cannot free VMA from under us */
+                  spin_lock(&sz_src->slot_lock[src_cluster]);
+                  map_count = READ_ONCE(sz_src->swap_map[src_offset]);
 
-		/* no remap needed this was freed from under us */
-		if (!map_count) {
-			spin_unlock(&sz_src->slot_lock[src_cluster]);
-			atomic_inc(&sz_dst->invalid);
-			continue;
-		}
-		retry++;
+                  move_index = READ_ONCE(sz_src->mapping_arr[src_offset].index);
+                  move_mapping = READ_ONCE(sz_src->mapping_arr[src_offset].mapping);              
+                  move_accessed_bitmap = READ_ONCE(sz_src->mapping_arr[src_offset].accessed_bitmap);              
+                  move_num_samples = READ_ONCE(sz_src->mapping_arr[src_offset].num_samples);              
+                  BUG_ON(!move_index && !move_mapping);
 
-		if (retry == MAX_GC_RETRIES) {
-			pr_info("too many retries\n");
-			BUG();
-		}
+                  /* no remap needed this was freed from under us */
+                  if (!map_count) {
+                    printk(KERN_INFO "%s::%d fuck!!!!\n", __func__, __LINE__);
+                    spin_unlock(&sz_src->slot_lock[src_cluster]);
+                    atomic_inc(&sz_dst->invalid);
+                    continue;
+                  }
+                  retry++;
 
-		/* stop the anon vma from being freed under us */
-		//anon_vma = manual_get_anon_vma(move_page->mapping);
-		anon_vma = manual_get_anon_vma(move_mapping);
+                  if (retry == MAX_GC_RETRIES) {
+                    pr_info("too many retries\n");
+                    BUG();
+                  }
 
-		if (!anon_vma) {
-			pr_info("anon VMA does not exist, are we dying?\n");
-			BUG();
-		}
+                  /* stop the anon vma from being freed under us */
+                  //anon_vma = manual_get_anon_vma(move_page->mapping);
+                  anon_vma = manual_get_anon_vma(move_mapping);
 
-		if (map_count & SWAP_HAS_CACHE) {
-			spin_unlock(&sz_src->slot_lock[src_cluster]);
+                  if (!anon_vma) {
+                    pr_info("anon VMA does not exist, are we dying?\n");
+                    BUG();
+                  }
 
-			if (!gc_eval_swap_map(zi, &sz_src->slot_lock[src_cluster],
-						src_zone, src_offset, map_count,
-						move_page, true, src_zone,
-						src_offset, dst_zone,
-						dst_offset, &dst_addr)) {
-				put_anon_vma(anon_vma);
-				cond_resched();
-				goto retry;
-			}
+                  if (map_count & SWAP_HAS_CACHE) {
+                    printk(KERN_INFO "%s::%d fuck!!!!\n", __func__, __LINE__);
+                    spin_unlock(&sz_src->slot_lock[src_cluster]);
 
-			/* we faulted the whole thing in and remapped
-			 * the swap cache, go ahead*/
-			put_anon_vma(anon_vma);
-			atomic_inc(&sz_dst->has_cache);
-			continue;
-		}
+                    if (!gc_eval_swap_map(zi, &sz_src->slot_lock[src_cluster],
+                          src_zone, src_offset, map_count,
+                          move_page, true, src_zone,
+                          src_offset, dst_zone,
+                          dst_offset, &dst_addr)) {
+                    printk(KERN_INFO "%s::%d fuck!!!!\n", __func__, __LINE__);
+                      put_anon_vma(anon_vma);
+                      cond_resched();
+                      goto retry;
+                    }
 
-		/* get the cluster lock while going over page tables */
-		count_vm_event(PZNS_GCREMAP_SC);
-		WRITE_ONCE(sz_src->swap_map[src_offset], SWAP_HAS_CACHE);
-		spin_unlock(&sz_src->slot_lock[src_cluster]);
-		WRITE_ONCE(sz_dst->swap_map[dst_offset], SWAP_HAS_CACHE);
-		gc_move_swap_cgroup(src_addr, dst_addr);
+                    /* we faulted the whole thing in and remapped
+                     * the swap cache, go ahead*/
+                    put_anon_vma(anon_vma);
+                    atomic_inc(&sz_dst->has_cache);
+                    continue;
+                  }
 
-		anon_vma_lock_read(anon_vma);
-		moved_ptes = move_swapped_ptes(move_page, src_addr,
-				dst_addr);
-		anon_vma_unlock_read(anon_vma);
-		put_anon_vma(anon_vma);
+                  /* get the cluster lock while going over page tables */
+                  count_vm_event(PZNS_GCREMAP_SC);
+                  WRITE_ONCE(sz_src->swap_map[src_offset], SWAP_HAS_CACHE);
+                  spin_unlock(&sz_src->slot_lock[src_cluster]);
+                  WRITE_ONCE(sz_dst->swap_map[dst_offset], SWAP_HAS_CACHE);
+                  gc_move_swap_cgroup(src_addr, dst_addr);
 
-                // C.S of dst_zone
-		spin_lock(&sz_dst->slot_lock[dst_cluster]);
-		WRITE_ONCE(sz_dst->swap_map[dst_offset], map_count);
+                  anon_vma_lock_read(anon_vma);
+                  moved_ptes = move_swapped_ptes(move_page, src_addr,
+                      dst_addr);
+                  anon_vma_unlock_read(anon_vma);
+                  put_anon_vma(anon_vma);
 
-		WRITE_ONCE(sz_dst->mapping_arr[dst_offset].index, move_index);
-		WRITE_ONCE(sz_dst->mapping_arr[dst_offset].mapping, move_mapping);
-		WRITE_ONCE(sz_dst->mapping_arr[dst_offset].accessed_bitmap, move_accessed_bitmap);
-		WRITE_ONCE(sz_dst->mapping_arr[dst_offset].num_samples, move_num_samples);
-		spin_unlock(&sz_dst->slot_lock[dst_cluster]);
+                  // C.S of dst_zone
+                  spin_lock(&sz_dst->slot_lock[dst_cluster]);
+                  WRITE_ONCE(sz_dst->swap_map[dst_offset], map_count);
 
-                // C.S of src_zone
-		spin_lock(&sz_src->slot_lock[src_cluster]);
-		WRITE_ONCE(sz_src->swap_map[src_offset], 0);
+                  WRITE_ONCE(sz_dst->mapping_arr[dst_offset].index, move_index);
+                  WRITE_ONCE(sz_dst->mapping_arr[dst_offset].mapping, move_mapping);
+                  WRITE_ONCE(sz_dst->mapping_arr[dst_offset].accessed_bitmap, move_accessed_bitmap);
+                  WRITE_ONCE(sz_dst->mapping_arr[dst_offset].num_samples, move_num_samples);
+                  spin_unlock(&sz_dst->slot_lock[dst_cluster]);
 
-		WRITE_ONCE(sz_src->mapping_arr[src_offset].index, 0);
-		WRITE_ONCE(sz_src->mapping_arr[src_offset].mapping, 0);
-		spin_unlock(&sz_src->slot_lock[src_cluster]);
+                  // C.S of src_zone
+                  spin_lock(&sz_src->slot_lock[src_cluster]);
+                  WRITE_ONCE(sz_src->swap_map[src_offset], 0);
 
-		if (moved_ptes != map_count)
-			goto retry;
+                  WRITE_ONCE(sz_src->mapping_arr[src_offset].index, 0);
+                  WRITE_ONCE(sz_src->mapping_arr[src_offset].mapping, 0);
+                  spin_unlock(&sz_src->slot_lock[src_cluster]);
 
-		if (find_get_page(swap_address_space(src_addr), swp_offset(src_addr)))
-			BUG();
+                  if (moved_ptes != map_count){
+                    printk(KERN_INFO "%s::%d fuck!!!! moved_ptes=%d map_cnt=%d\n", __func__, __LINE__, moved_ptes, map_count);
+                    goto retry;
+                  }
 
-		if (find_get_page(swap_address_space(dst_addr), swp_offset(dst_addr)))
-			BUG();
+                  if (find_get_page(swap_address_space(src_addr), swp_offset(src_addr))){
+                    printk(KERN_INFO "%s::%d fuck!!!!\n", __func__, __LINE__);
+                    BUG();
+                  }
+
+                  if (find_get_page(swap_address_space(dst_addr), swp_offset(dst_addr))){
+                    printk(KERN_INFO "%s::%d fuck!!!!\n", __func__, __LINE__);
+                    BUG();
+                  }
+                }
 	}
+
 
 	zi->rctx.num_pages = 0;
 	atomic_set(&zi->rctx.finished_read, 0);
 	atomic_set(&zi->rctx.finished_write, 0);
 	WRITE_ONCE(zi->rctx.stat, ZNS_GC_IDLE);
+        printk(KERN_INFO "End activate zone! numpages=%d \n", zi->rctx.num_pages);
 
 	return;
 }
@@ -5988,7 +6058,6 @@ static void gc_move_zone_write(struct zns_swap_info_struct *zi,
 		BUG();
 		return;
 	}
-        printk(KERN_INFO "[%s::%d] numPages=%d\n", __func__, __LINE__, num_pages);
 
 	/* submit all writes to new zones */
 	for (i = 0; i < num_pages; i++)
@@ -5996,7 +6065,7 @@ static void gc_move_zone_write(struct zns_swap_info_struct *zi,
 		struct cgroup_subsys_state *css = NULL;
 
 		move_page = &zi->rctx.buffer[i];
-		move_bio = zi->rctx.move_bios[dst_index];
+		move_bio = zi->rctx.move_bios[dst_index / ZNS_WRITE_GRAN];
 
 		src_addr.val = page_private(move_page);
 		src_cur_zone = zns_offset_to_zone_cap(zi,
@@ -6018,8 +6087,9 @@ retry:
 		map_count = READ_ONCE(sz_src->swap_map[src_cur_offset]);
 
 		/* entry is empty */
-		if (!map_count)
+		if (!map_count){
 			continue;
+                }
 
 		retry++;
 
@@ -6041,12 +6111,12 @@ retry:
 retry_new_slot:
 		if (gc_zone_num == -1) {
 			gc_zone_num = gc_swap_zone_slot(zi, from_zone_num);
-                        printk(KERN_INFO "[%s::%d] gcZone#=%d\n", __func__, __LINE__, gc_zone_num);
 			is_gc_zone = (atomic_read(&zi->gc_in_use) >= 0);
-			blk_start_plug(&plug);
+			//blk_start_plug(&plug);
 		} else {
 			if(unlikely(!alloc_swap_slot(zi, gc_zone_num, NULL, is_gc_zone))) {
-				blk_finish_plug(&plug);
+                          printk(KERN_INFO "[%s::%d] FUCK!! in %dth Page \n", __func__, __LINE__, i);
+			//	blk_finish_plug(&plug);
 				gc_zone_num = -1;
 				goto retry_new_slot;
 			}
@@ -6059,11 +6129,16 @@ retry_new_slot:
 
 		/* where to actually write the data */
 		zone_start =  (zi->zone_size << 3) * gc_zone_num;
+                if (!(dst_index % ZNS_WRITE_GRAN)){ 
+                  bio_reset(move_bio);
+                  move_bio->bi_opf = REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
+                  bio_set_dev(move_bio, zi->si->bdev);
+                  printk(KERN_INFO "[%s::%d] START RESET %dth BIO %p %dth Page Zone(%lld), #From%d To%d# dst_index=%d\n", __func__, __LINE__, dst_index/ZNS_WRITE_GRAN, move_bio, i, zone_start, from_zone_num,  gc_zone_num, dst_index);
+                  move_bio->bi_end_io = end_zns_gc_write;
+                }
+                move_bio->bi_iter.bi_sector = zone_start;
 
-                BUG();
-		bio_reset(move_bio);
-		move_bio->bi_opf = REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
-		if (zi->zns_cgroup_account) {
+                if (zi->zns_cgroup_account) {
 			unsigned short id;
 			struct mem_cgroup *memcg = NULL;
 			id = lookup_swap_cgroup_id(src_addr);
@@ -6085,29 +6160,44 @@ retry_new_slot:
 				rcu_read_unlock();
 			}
 		}
-		bio_set_dev(move_bio, zi->si->bdev);
-		move_bio->bi_iter.bi_sector = zone_start;
-		move_bio->bi_end_io = end_zns_gc_write;
-
-		bio_add_page(move_bio, move_page, PAGE_SIZE, 0);
-		submit_bio(move_bio);
-
+                bio_add_page(move_bio, move_page, PAGE_SIZE, 0);
+                if (move_bio->bi_vcnt == ZNS_WRITE_GRAN){
+                  printk(KERN_INFO "[%s::%d] %dth movebio SUBMIT! i=%d (%dpages) %p biSector=%lld zone=%lld dst_index=%d\n", __func__, __LINE__, dst_index / ZNS_WRITE_GRAN, i, move_bio->bi_vcnt, move_bio, move_bio->bi_iter.bi_sector, (move_bio->bi_iter.bi_sector >> 3)/24576, dst_index);
+                  submit_bio(move_bio);
+                }
+                else if (i == num_pages -1){
+                  int j;
+                  int pad = 0;
+                  pad = ZNS_WRITE_GRAN - move_bio->bi_vcnt;
+                  for(j = 0; j < pad; j++){
+                    struct page *pad_page = alloc_page(GFP_KERNEL);
+                    if(!pad_page) BUG();
+                    move_bio->pad_list[j] = (unsigned long) page_address(pad_page);
+                    bio_add_page(move_bio, pad_page, PAGE_SIZE, 0);
+                    move_bio->padded++;
+                  }
+                  printk(KERN_INFO "[%s::%d] %dth movebio (%dth page) Partially SUBMIT %d pages!(padded=%d(%d)) %p (%dth) biSector=%lld Zone=%lld dst_index=%d\n", 
+                  __func__, __LINE__, dst_index / ZNS_WRITE_GRAN, i, move_bio->bi_vcnt, move_bio->padded, pad, move_bio, i, move_bio->bi_iter.bi_sector, (move_bio->bi_iter.bi_sector >> 3)/24576, dst_index);
+                  submit_bio(move_bio);
+                }
 		if (css)
 			kthread_associate_blkcg(NULL);
-		dst_index++;
 
+                dst_index++;
 		/* if we finished GC zone, find a new one */
 	}
 
 	if (src_cluster != -1)
 		spin_unlock(&sz_src->slot_lock[src_cluster]);
 
-	blk_finish_plug(&plug);
+	//blk_finish_plug(&plug);
 	WRITE_ONCE(zi->rctx.num_pages, dst_index);
 	count_vm_events(PZNS_GCWRITE, dst_index);
-	WRITE_ONCE(zi->rctx.stat, ZNS_GC_WRITING);
+        printk(KERN_INFO "[%s::%d] (%d) %p numpages=%d last_pos=%d dst_index=%d\n",
+        __func__, __LINE__, i, move_bio, zi->rctx.num_pages, zi->rctx.last_pos, dst_index);
 
 	/* thats it - wait for writes to finish */
+        WRITE_ONCE(zi->rctx.stat, ZNS_GC_WRITING);
 	cond_resched();
 	return;
 }
@@ -6120,7 +6210,7 @@ static void gc_move_zone_read(struct zns_swap_info_struct *zi,
 	struct swap_zone *from_zone;
 	int buffer_pos = 0;
 	struct bio *move_bio;
-	struct blk_plug plug;
+        struct blk_plug plug;
 	bool first;
 	sector_t sector;
 	swp_entry_t src_addr;
@@ -6139,6 +6229,7 @@ static void gc_move_zone_read(struct zns_swap_info_struct *zi,
 		unsigned char map_count;
 		retry = 0;
 
+                // Gather
 retry:
 		cur_cluster = i / SWAPFILE_CLUSTER;
 		if (cluster != cur_cluster) {
@@ -6173,10 +6264,13 @@ retry:
 		/* to trigger locking next iter */
 		cluster = -1;
 
-		if (first) {
-			first = false;
-			blk_start_plug(&plug);
-		}
+                if (first) {
+                        //blk_start_plug(&plug);
+                        first = false;
+                }
+
+                // GC-READ
+                // 192KB Granularity (48page per bio)
 
 		move_bio = zi->rctx.move_bios[buffer_pos / ZNS_WRITE_GRAN];
 		move_page = &zi->rctx.buffer[buffer_pos];
@@ -6193,7 +6287,10 @@ retry:
 
 		/* store in private where this data was read from */
 		set_page_private(move_page, src_addr.val);
-		if (!(buffer_pos % ZNS_WRITE_GRAN) && !buffer_pos) bio_reset(move_bio);
+		if (!(buffer_pos % ZNS_WRITE_GRAN)){
+                  printk(KERN_INFO "[%s::%d] START RESET BIO %p | bpos = %d i= %d lastpos=%d\n", __func__, __LINE__, move_bio, buffer_pos, i, zi->rctx.last_pos);
+                  bio_reset(move_bio);
+                }
 		move_bio->bi_opf = REQ_OP_READ | REQ_SWAP_MET;
 		if (zi->zns_cgroup_account) {
 			unsigned short id;
@@ -6223,20 +6320,16 @@ retry:
 
 		/* store in bio private the potential GC dest zone */
 		bio_add_page(move_bio, move_page, PAGE_SIZE, 0);
-                printk(KERN_INFO "[%s::%d] %dth moveBio %p viCNT=%d\n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN), move_bio, move_bio->bi_vcnt);
+//                  printk(KERN_INFO "[%s::%d] (%d) ADDPAGE! %p %dthPage\n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN), move_bio, i);
 
                 if (move_bio->bi_vcnt == ZNS_WRITE_GRAN){
-                  printk(KERN_INFO "[%s::%d] (%d) SUBMIT!\n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN));
+                  printk(KERN_INFO "[%s::%d] (%d) SUBMIT! %p\n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN), move_bio);
                   submit_bio(move_bio);
                 }
-                else if (((buffer_pos / ZNS_WRITE_GRAN) == 20) || (i == zi->zone_capacity - 1)){
-                  printk(KERN_INFO "[%s::%d] (%d) Partially SUBMIT!\n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN));
+                else if (((buffer_pos / ZNS_WRITE_GRAN) == 21) && !((buffer_pos+1)%ZNS_GC_PAGES)){
+                  printk(KERN_INFO "[%s::%d] (%d) (%dth) Partially SUBMIT %d pages! %p (%dth)\n", 
+                  __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN), i, move_bio->bi_vcnt, move_bio, i);
                   submit_bio(move_bio);
-                }
-                else{
-                  buffer_pos++;
-                  printk(KERN_INFO "[%s::%d] (%d) continue (GRAN=%d)\n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN), ZNS_WRITE_GRAN);
-                  continue;
                 }
 
 		if (css)
@@ -6248,27 +6341,30 @@ retry:
 		 * or did not reach the end*/
 		if (buffer_pos == ZNS_GC_PAGES ||
 				(i == zi->zone_capacity - 1)) {
-                  printk(KERN_INFO "[%s::%d] (%d) \n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN));
 			i++;
 			goto end_round;
 		}
+
 	}
 end_round:
 	if (cluster != -1)
 		spin_unlock(&from_zone->slot_lock[cluster]);
-	/* we finished the batch / the whole reclaim.
-	 * lets submit the reads, then take care of the writes */
-	if (!first)
-		blk_finish_plug(&plug);
+        /* we finished the batch / the whole reclaim.
+         * lets submit the reads, then take care of the writes */
+        //if (!first)
+           //blk_finish_plug(&plug);
 
 	/* save the state */
 	WRITE_ONCE(zi->rctx.last_pos, i);
 	WRITE_ONCE(zi->rctx.num_pages, buffer_pos);
+        printk(KERN_INFO "[%s::%d] (%d) (%dth)ENDROUND %p bufpos=%d lastpos(i)=%d numpages(bufp)=%d\n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN), i, move_bio, buffer_pos, zi->rctx.last_pos, zi->rctx.num_pages);
 
 	if (!first)
 		WRITE_ONCE(zi->rctx.stat, ZNS_GC_READING);
-	else
+	else{
+          printk(KERN_INFO "!first in gcread\n");
 		WRITE_ONCE(zi->rctx.stat, ZNS_GC_WRITING);
+        }
 
 	/* thats it - submit */
 	cond_resched();
@@ -6309,7 +6405,7 @@ static inline bool check_suspend(struct zns_swap_info_struct *zi)
 		return false;
 	}
 
-	set_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
+	//set_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
 	return true;
 }
 static inline bool check_high_wmark(struct zns_swap_info_struct *zi)
@@ -6352,7 +6448,7 @@ static inline bool check_low_wmark(struct zns_swap_info_struct *zi)
 	potential_free_zones = gc_calc_potential(zi);
 
 	if (potential_free_zones > 1) {
-		set_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
+		//set_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
 		return true;
 	}
 
@@ -6443,29 +6539,38 @@ static void kznsd_gc(struct zns_swap_info_struct *zi)
 again:
 	switch(zi->rctx.stat) {
 	case ZNS_GC_IDLE:
+                printk(KERN_INFO "ZNS GC IDLE\n");
 		if (!zi->rctx.last_pos) {
 			victim = find_victim_zone(zi);
 			if (victim == -1)
 				return;
 			zi->rctx.from_zone = victim;
-		}
+                }
+                printk(KERN_INFO "VICTIM ZONE =%d || ZNS GC READ START\n", zi->rctx.from_zone);
 		gc_move_zone_read(zi, victim);
 		fallthrough;
 	case ZNS_GC_READING:
-		if (atomic_read(&zi->rctx.finished_read) != zi->rctx.num_pages)
+		if (atomic_read(&zi->rctx.finished_read) != zi->rctx.num_pages){
 			break;
-		if (zi->rctx.num_pages)
+                }
+		if (zi->rctx.num_pages){
+                printk(KERN_INFO "ZNS GC WRITE START\n");
 			gc_move_zone_write(zi, victim);
+                }
 		fallthrough;
 	case ZNS_GC_WRITING:
-		if (atomic_read(&zi->rctx.finished_write) != zi->rctx.num_pages)
+		if (atomic_read(&zi->rctx.finished_write) != zi->rctx.num_pages){
 			break;
-		if (zi->rctx.num_pages)
+                }
+		if (zi->rctx.num_pages){
+                        printk(KERN_INFO "ZNS GC ACTIVATE START\n");
 			gc_move_zone_activate(zi);
+                }
 		/* check if we are done after this activate */
 		if (zi->rctx.last_pos == zi->zone_capacity) {
 			atomic_set(&zi->swap_zones[zi->rctx.from_zone].invalid,
 					zi->zone_capacity);
+                        printk(KERN_INFO "FINISH GC ACTIVATE, numPage=%d last_pos=%d RETURN !\n", zi->rctx.num_pages, zi->rctx.last_pos); 
 			gc_reset_swap_zone(zi, zi->rctx.from_zone);
 			zi->rctx.num_pages = 0;
 			zi->rctx.from_zone = -1;
@@ -6476,6 +6581,7 @@ again:
 			/* we finish here after resetting the zone */
 			return;
 		} else if(!zi->rctx.num_pages){
+                        printk(KERN_INFO "FINISH GC ACTIVATE, numPage=%d last_pos=%d GOTO Again\n", zi->rctx.num_pages, zi->rctx.last_pos); 
 			zi->rctx.num_pages = 0;
 			atomic_set(&zi->rctx.finished_read, 0);
 			atomic_set(&zi->rctx.finished_write, 0);

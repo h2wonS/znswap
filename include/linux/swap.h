@@ -377,6 +377,7 @@ struct zns_swap_info_struct {
 	atomic_t free_zones;
 	unsigned long flags;
         unsigned int start_bucket_order;
+        atomic_t current_gc_zone;
 };
 
 /* API structs */

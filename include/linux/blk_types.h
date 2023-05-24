@@ -277,8 +277,11 @@ struct bio {
 	struct bio_set		*bi_pool;
 	struct page_md_m	bi_page_md;
         int tmp;
+        int padded;
 
         struct page_md_m chunk_map[47];
+        unsigned long dest_entry[48];
+        unsigned long pad_list[48];
 
 	/*
 	 * We can inline a number of vecs at the end of the bio, to avoid

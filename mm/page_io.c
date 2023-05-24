@@ -41,6 +41,7 @@ void end_swap_bio_write(struct bio *bio)
     if(bio->tmp != 0xbbbbbbbb){
         BUG();
     }
+
     for(i = 0; i < (int)bio->bi_vcnt; i++){
         WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED));
         cur_page = bio->bi_io_vec[i].bv_page;
@@ -52,10 +53,11 @@ void end_swap_bio_write(struct bio *bio)
             sector_t zone_start = (blk_queue_zone_sectors(q) >> 3) *
                 swp_offset(entry);
             new_off = bio->bi_iter.bi_sector >> 3;
+            int new_zone = new_off / 24576;
 
             SetPageError(cur_page);
             slot = (unsigned long)new_off - (unsigned long)zone_start;
-            pr_info("%lu: Error on swap zone: %lu slot\n", swp_offset(entry), new_off);
+            pr_info("%lu: {%p} Error on swap zone: %lu slot to %d zone!\n", swp_offset(entry), bio, new_off, new_zone);
             BUG();
             /*
              * We failed to write the page out to swap-space.
@@ -420,6 +422,7 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
         }
 
         zone_start = (sis->zns_swap->zone_size << 3) *  swp_offset(entry);
+        BUG_ON(swp_offset(entry) == atomic_read(&sis->zns_swap->current_gc_zone));
 
         swap_bio[swp_idx]->bi_opf |= REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
         swap_bio[swp_idx]->bi_iter.bi_sector = zone_start;
