@@ -1028,7 +1028,6 @@ static inline bool alloc_swap_slot(struct zns_swap_info_struct *zi,
 	swp_pos = atomic_inc_return(&zi->swap_zones[zone].count) - 1;
 
 	if (unlikely(swp_pos >= zi->zone_capacity)) {
-          printk(KERN_INFO "{Zone# %d} swp_pos = %d\n", zone, swp_pos);
 		atomic_dec(&zi->swap_zones[zone].count);
 		return false;
 	}
@@ -1039,7 +1038,6 @@ static inline bool alloc_swap_slot(struct zns_swap_info_struct *zi,
 		int cur_zone_slot;
 
 		if(unlikely(is_gc_zone)) {
-                  printk("FUCK!!! %s::%d\n", __func__, __LINE__);
 			atomic_set(&zi->gc_in_use, -1);
 			return true;
 		}
@@ -1382,7 +1380,6 @@ retry_new_zone:
 	gc_zone_num = atomic_read(&zi->gc_in_use);
 	if (unlikely(gc_zone_num >= 0)) {
 		if(likely(alloc_swap_slot(zi, gc_zone_num, NULL, true))) {
-                  printk(KERN_INFO "We allocate New GC ZONE #%d\n", gc_zone_num);
                   atomic_set(&zi->current_gc_zone, gc_zone_num);
 			return gc_zone_num;
 		}
@@ -1406,7 +1403,6 @@ retry_new_zone:
 		if(unlikely(!alloc_swap_slot(zi, gc_zone_num, NULL, false)))
 			goto retry_next_slot;
 
-                printk(KERN_INFO "We reuse opened GC ZONE #%d\n", gc_zone_num);
 		found = true;
                 atomic_set(&zi->current_gc_zone, gc_zone_num);
 		break;
@@ -1460,7 +1456,6 @@ static int zns_swap_map_slots(struct swap_info_struct *si, swp_entry_t slots[],
 			slots[nr_ret++] = zns_tmp_swp_entry(si->type, zone);
 			break;
 		} else {
-                  printk("[%s::%d] Sleep! IsNOTGCZONE Zone=%d\n", __func__, __LINE__, zone);
 			cond_resched();
 		}
 	}
@@ -4019,7 +4014,6 @@ static unsigned long read_swap_header(struct swap_info_struct *p,
 	unsigned long swapfilepages;
 	unsigned long last_page;
 
-        printk("[%s::%s::%d] swap_header magic=%p (%ld)\n", __FILE__, __func__, __LINE__, swap_header, sizeof(swap_header));
 	if (memcmp("SWAPSPACE2", swap_header->magic.magic, 10)) {
 		pr_err("Unable to find swap-space signature\n");
 		return 0;
@@ -4430,7 +4424,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 
 		zi->flags = 0;
 		zns_init_sysfs(zi);
-		zns_init_policy(zi, 384);
+		zns_init_policy(zi, queue_max_open_zones(q));
 		pr_info("Free zones %d\n", atomic_read(&zi->free_zones));
 
 		maxpages = zi->zone_capacity * zi->num_zones;
@@ -4501,6 +4495,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		atomic_set(&zi->rctx.finished_write, 0);
 		zi->rctx.num_pages = 0;
 		zi->rctx.last_pos = 0;
+		zi->rctx.last_bio = 0;
 		zi->rctx.stat = ZNS_GC_IDLE;
 
 		for (i = 0; i < ZNS_GC_BIOS; i++) {
@@ -5401,7 +5396,6 @@ static void end_zone_reset(struct bio *bio)
 
 void wakeup_kznsd (struct zns_swap_info_struct *zi) {
 	if (!waitqueue_active(&zi->gc_wait)){
-          printk("INACTIVE WAITQ\n");
 		return;
         }
 	wake_up_interruptible(&zi->gc_wait);
@@ -5722,14 +5716,13 @@ static void end_zns_gc_write(struct bio *bio)
 	swp_entry_t entry;
 
         int i;
-#if 1 
+#if 0 
         printk(KERN_INFO "[%s::%d] {BIO: %p} biSector=%lld newzone=%lld new_zone_off=%lld\n", 
         __func__, __LINE__, bio,  bio->bi_iter.bi_sector, (bio->bi_iter.bi_sector >> 3)/24576, (bio->bi_iter.bi_sector >> 3) % 24576);
 #endif
         for(i = 0; i < bio->bi_vcnt; i++){
           if (bio->padded){
             if (i == (bio->bi_vcnt - bio->padded)){
-              printk("isPadded bio -> padded %d pages in vcnt=%d pagesWrite=%d\n", bio->padded, bio->bi_vcnt, pages_write);
               int j;
               for(j=0; j<bio->padded; j++){
                 free_page(bio->pad_list[j]);
@@ -5772,7 +5765,7 @@ static void end_zns_gc_write(struct bio *bio)
           slot_count = atomic_inc_return(&si->zns_swap->swap_zones[new_zone].slot_count);
 
           if (slot_count == zi->zone_capacity) {
-            printk(KERN_INFO "[%s::%d] FUCK!!!\n", __func__, __LINE__);
+            printk(KERN_INFO "[%s::%d] GC ZONE is FULL -> should be closed!\n", __func__, __LINE__);
             atomic_set(&zns_si->zns_swap->swap_zones[new_zone].open, 3);
             atomic_inc(&zns_si->zns_swap->available_open_zones);
           }
@@ -5822,9 +5815,13 @@ static void end_zns_gc_read(struct bio *bio)
             BUG_ON(!page->mapping);
           }
 
-	pages_read = atomic_inc_return(&zi->rctx.finished_read);
+	  pages_read = atomic_inc_return(&zi->rctx.finished_read);
         }
-
+#if 1 
+        printk(KERN_INFO "[%s::%d] {BIO: %p} newzone=%lld new_zone_off=%lld, read=%d/(num_pages=%d)\n", 
+        __func__, __LINE__, bio,  (bio->bi_iter.bi_sector >> 3)/24576, (bio->bi_iter.bi_sector >> 3) % 24576, pages_read, zi->rctx.num_pages);
+#endif
+ 
 	if (pages_read == zi->rctx.num_pages){
           printk(KERN_INFO "[%s::%d] Wakeup KZNS BIO %p, %dthPage\n", __func__, __LINE__, bio, i);
 		wakeup_kznsd(zi);
@@ -5884,15 +5881,18 @@ static void gc_move_zone_activate(struct zns_swap_info_struct *zi)
 	num_pages = zi->rctx.num_pages;
         BUG_ON(!(num_pages / ZNS_WRITE_GRAN));
         
-	for (i = 0; i <= (num_pages / ZNS_WRITE_GRAN); i++) {
+	for (i = 0; i <= zi->rctx.last_bio; i++) {
 		retry = 0;
-                printk("i=%d numPages=%d\n", i, num_pages);
 		move_bio = zi->rctx.move_bios[i];
+                if(num_pages != 1024){
+                  printk(KERN_INFO "num_pages=%d, BIO(i=%d) (last=%d) End!\n", num_pages, i, zi->rctx.last_bio);
+                  break;
+                }
 
                 for(j = 0; j < move_bio->bi_vcnt; j++){
                   if(move_bio->padded){
                     if(j == (move_bio->bi_vcnt - move_bio->padded)){
-                      printk("isPadded bio -> padded %d pages in vcnt=%d %dthPage\n", move_bio->padded, move_bio->bi_vcnt, j);
+                      printk("isPadded bio(j=%d last=%d) -> padded %d pages in vcnt=%d %dthPage\n", j, zi->rctx.last_bio, move_bio->padded, move_bio->bi_vcnt, j);
                       break;
                     }
                   }
@@ -5906,8 +5906,9 @@ static void gc_move_zone_activate(struct zns_swap_info_struct *zi)
                   dst_zone = zns_offset_to_zone_cap(zi, swp_offset(dst_addr));
                   dst_offset = zns_offset_to_zone_off_cap(zi, swp_offset(dst_addr));
 #if 0 
-                  printk(KERN_INFO "[%s::%d] %dthBIO(%p) %dthPage szone=%d soff=%lx || (dst_addr=%lx(%lx)) dzone=%d doff=%lx\n",
-                  __func__, __LINE__, i, move_bio, j, src_zone, src_offset, dst_addr.val, move_bio->dest_entry[j], dst_zone, dst_offset);
+                  printk(KERN_INFO "[%s::%d] %dthBIO(%p) %dthPage szone=%d soff=%lx || dzone=%d doff=%lx | page_Map=0x%lx page_IDx=%ld\n",
+                  __func__, __LINE__, i, move_bio, j, src_zone, src_offset, dst_zone, dst_offset,
+                  move_page->mapping, move_page->index);
 #endif
                   BUG_ON(dst_zone < 0);
 
@@ -5925,7 +5926,12 @@ retry:
                   move_mapping = READ_ONCE(sz_src->mapping_arr[src_offset].mapping);              
                   move_accessed_bitmap = READ_ONCE(sz_src->mapping_arr[src_offset].accessed_bitmap);              
                   move_num_samples = READ_ONCE(sz_src->mapping_arr[src_offset].num_samples);              
-                  BUG_ON(!move_index && !move_mapping);
+
+                  if(!move_mapping && !move_index){
+                    pr_info("{%p} %dth Page NO MAP INFO :: move_map=0x%lx, move_idx=%ld, src_offset=%ld\n of src_zone=%d", move_bio, j, move_mapping, move_index, src_offset, src_zone);
+                    BUG_ON(!move_mapping);
+                  }
+//                  printk(KERN_INFO "IN MEM INFO! }} PageMap 0x%lx, PageIDx=%ld\n", move_page->mapping, move_page->index);
 
                   /* no remap needed this was freed from under us */
                   if (!map_count) {
@@ -6047,6 +6053,7 @@ static void gc_move_zone_write(struct zns_swap_info_struct *zi,
 	unsigned char map_count;
 	bool is_gc_zone;
 	int retry;
+        bool is_over_zone;
 
 	gc_zone_num = -1;
 	is_gc_zone = false;
@@ -6063,6 +6070,7 @@ static void gc_move_zone_write(struct zns_swap_info_struct *zi,
 	for (i = 0; i < num_pages; i++)
 	{
 		struct cgroup_subsys_state *css = NULL;
+                is_over_zone = false;
 
 		move_page = &zi->rctx.buffer[i];
 		move_bio = zi->rctx.move_bios[dst_index / ZNS_WRITE_GRAN];
@@ -6088,7 +6096,14 @@ retry:
 
 		/* entry is empty */
 		if (!map_count){
-			continue;
+                  if(i == (num_pages -1)){
+                    printk(KERN_INFO, "LAST PAGE(%d)! goto TRY SUBMIT LAST BIO\n", i);
+                    spin_unlock(&sz_src->slot_lock[src_cluster]);
+                    goto try_submit_last_bio;
+                  }
+		  else{
+                    continue;
+                  }
                 }
 
 		retry++;
@@ -6111,12 +6126,17 @@ retry:
 retry_new_slot:
 		if (gc_zone_num == -1) {
 			gc_zone_num = gc_swap_zone_slot(zi, from_zone_num);
+                        unsigned int spos;
+                        spos = atomic_read(&zi->swap_zones[gc_zone_num].count);
+
 			is_gc_zone = (atomic_read(&zi->gc_in_use) >= 0);
-			//blk_start_plug(&plug);
+			blk_start_plug(&plug);
 		} else {
+                        unsigned int spos;
+                        spos = atomic_read(&zi->swap_zones[gc_zone_num].count);
 			if(unlikely(!alloc_swap_slot(zi, gc_zone_num, NULL, is_gc_zone))) {
                           printk(KERN_INFO "[%s::%d] FUCK!! in %dth Page \n", __func__, __LINE__, i);
-			//	blk_finish_plug(&plug);
+				blk_finish_plug(&plug);
 				gc_zone_num = -1;
 				goto retry_new_slot;
 			}
@@ -6133,7 +6153,10 @@ retry_new_slot:
                   bio_reset(move_bio);
                   move_bio->bi_opf = REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
                   bio_set_dev(move_bio, zi->si->bdev);
-                  printk(KERN_INFO "[%s::%d] START RESET %dth BIO %p %dth Page Zone(%lld), #From%d To%d# dst_index=%d\n", __func__, __LINE__, dst_index/ZNS_WRITE_GRAN, move_bio, i, zone_start, from_zone_num,  gc_zone_num, dst_index);
+                  unsigned int spos;
+                        spos = atomic_read(&zi->swap_zones[gc_zone_num].count);
+
+                 // printk(KERN_INFO "[%s::%d] START RESET %dth BIO %p %dth Page Zone(%lld), #From%d To%d# dst_index=%d spos=%d\n", __func__, __LINE__, dst_index/ZNS_WRITE_GRAN, move_bio, i, zone_start, from_zone_num,  gc_zone_num, dst_index, spos);
                   move_bio->bi_end_io = end_zns_gc_write;
                 }
                 move_bio->bi_iter.bi_sector = zone_start;
@@ -6161,23 +6184,76 @@ retry_new_slot:
 			}
 		}
                 bio_add_page(move_bio, move_page, PAGE_SIZE, 0);
+
                 if (move_bio->bi_vcnt == ZNS_WRITE_GRAN){
-                  printk(KERN_INFO "[%s::%d] %dth movebio SUBMIT! i=%d (%dpages) %p biSector=%lld zone=%lld dst_index=%d\n", __func__, __LINE__, dst_index / ZNS_WRITE_GRAN, i, move_bio->bi_vcnt, move_bio, move_bio->bi_iter.bi_sector, (move_bio->bi_iter.bi_sector >> 3)/24576, dst_index);
+                  unsigned int spos;
+                        spos = atomic_read(&zi->swap_zones[gc_zone_num].count);
+#if 1
+                  printk(KERN_INFO "[%s::%d] %dth movebio SUBMIT! i=%d (%dpages) %p biSector=%lld zone=%lld dst_index=%d, spos=%d\n",
+                  __func__, __LINE__, dst_index / ZNS_WRITE_GRAN, i, move_bio->bi_vcnt, move_bio, move_bio->bi_iter.bi_sector, (move_bio->bi_iter.bi_sector >> 3)/24576, dst_index, spos);
+#endif
                   submit_bio(move_bio);
+                  zi->rctx.last_bio = dst_index / ZNS_WRITE_GRAN;
+                  dst_index++;
+                  continue;
                 }
-                else if (i == num_pages -1){
+
+try_submit_last_bio:
+                if (i == (num_pages -1)){
+                  printk(KERN_INFO "Last Page -> Try Submit Last Bio!\n");
                   int j;
                   int pad = 0;
+                  unsigned int spos;
                   pad = ZNS_WRITE_GRAN - move_bio->bi_vcnt;
+                  
                   for(j = 0; j < pad; j++){
+
+                    spos = atomic_inc_return(&zi->swap_zones[gc_zone_num].count) - 1;
+                    if(spos >= zi->zone_capacity){
+                      printk(KERN_INFO "%dth Pad Fuck is over! spos=%d\n", j, spos);
+                      atomic_dec(&zi->swap_zones[gc_zone_num].count);
+                      is_over_zone = true;
+                      break;
+                    }
+
                     struct page *pad_page = alloc_page(GFP_KERNEL);
                     if(!pad_page) BUG();
                     move_bio->pad_list[j] = (unsigned long) page_address(pad_page);
+
+                    if(spos == zi->zone_capacity -1){
+                      int cur_z_slot;
+
+                      if(is_gc_zone) {
+                        printk("%dth Pad !! FuCK is GC ZNE !! should be closed\n", j);
+                        atomic_set(&zi->gc_in_use, -1);
+                        bio_add_page(move_bio, pad_page, PAGE_SIZE, 0);
+                        move_bio->padded++;
+                        continue;
+                      }
+
+                      cur_z_slot = zi->swap_zones[gc_zone_num].cur_open_slot;
+                      printk("%dth Pad !! should be closed curslotd=%d\n", j, cur_z_slot);
+                      VM_BUG_ON(cur_z_slot >= zi->max_open_zones);
+                      VM_BUG_ON(cur_z_slot < 0);
+                      atomic_set(&zi->open_zones[cur_z_slot], -1);
+                      atomic_set(&zi->using_open_zones[cur_z_slot], 0);
+                    }
+
                     bio_add_page(move_bio, pad_page, PAGE_SIZE, 0);
                     move_bio->padded++;
                   }
-                  printk(KERN_INFO "[%s::%d] %dth movebio (%dth page) Partially SUBMIT %d pages!(padded=%d(%d)) %p (%dth) biSector=%lld Zone=%lld dst_index=%d\n", 
-                  __func__, __LINE__, dst_index / ZNS_WRITE_GRAN, i, move_bio->bi_vcnt, move_bio->padded, pad, move_bio, i, move_bio->bi_iter.bi_sector, (move_bio->bi_iter.bi_sector >> 3)/24576, dst_index);
+
+                  if(is_over_zone){
+                    printk(KERN_INFO "{%p} %dth movebio Pad is over zone, %dth Page RetryNewSlot(Zone) padded=%d should be 0\n", move_bio, dst_index / ZNS_WRITE_GRAN, i, move_bio->padded);
+                    goto retry_new_slot;
+                  }
+
+                  spos = atomic_read(&zi->swap_zones[gc_zone_num].count);
+                  zi->rctx.last_bio = dst_index / ZNS_WRITE_GRAN;
+#if 1
+                  printk(KERN_INFO "[%s::%d] %dth movebio (%dth page) Partially SUBMIT %d pages!(padded=%d(%d)) %p (%dth) biSector=%lld Zone=%lld dst_index=%d spos=%d\n", 
+                  __func__, __LINE__, dst_index / ZNS_WRITE_GRAN, i, move_bio->bi_vcnt, move_bio->padded, pad, move_bio, i, move_bio->bi_iter.bi_sector, (move_bio->bi_iter.bi_sector >> 3)/24576, dst_index, spos);
+#endif
                   submit_bio(move_bio);
                 }
 		if (css)
@@ -6190,11 +6266,11 @@ retry_new_slot:
 	if (src_cluster != -1)
 		spin_unlock(&sz_src->slot_lock[src_cluster]);
 
-	//blk_finish_plug(&plug);
+	blk_finish_plug(&plug);
 	WRITE_ONCE(zi->rctx.num_pages, dst_index);
 	count_vm_events(PZNS_GCWRITE, dst_index);
-        printk(KERN_INFO "[%s::%d] (%d) %p numpages=%d last_pos=%d dst_index=%d\n",
-        __func__, __LINE__, i, move_bio, zi->rctx.num_pages, zi->rctx.last_pos, dst_index);
+        printk(KERN_INFO "[%s::%d] (%d) %p numpages=%d last_pos=%d dst_index=%d the last bio=%d\n",
+        __func__, __LINE__, i, move_bio, zi->rctx.num_pages, zi->rctx.last_pos, dst_index, zi->rctx.last_bio);
 
 	/* thats it - wait for writes to finish */
         WRITE_ONCE(zi->rctx.stat, ZNS_GC_WRITING);
@@ -6265,7 +6341,7 @@ retry:
 		cluster = -1;
 
                 if (first) {
-                        //blk_start_plug(&plug);
+                        blk_start_plug(&plug);
                         first = false;
                 }
 
@@ -6288,7 +6364,7 @@ retry:
 		/* store in private where this data was read from */
 		set_page_private(move_page, src_addr.val);
 		if (!(buffer_pos % ZNS_WRITE_GRAN)){
-                  printk(KERN_INFO "[%s::%d] START RESET BIO %p | bpos = %d i= %d lastpos=%d\n", __func__, __LINE__, move_bio, buffer_pos, i, zi->rctx.last_pos);
+//                  printk(KERN_INFO "[%s::%d] START RESET BIO %p | bpos = %d i= %d lastpos=%d\n", __func__, __LINE__, move_bio, buffer_pos, i, zi->rctx.last_pos);
                   bio_reset(move_bio);
                 }
 		move_bio->bi_opf = REQ_OP_READ | REQ_SWAP_MET;
@@ -6323,12 +6399,14 @@ retry:
 //                  printk(KERN_INFO "[%s::%d] (%d) ADDPAGE! %p %dthPage\n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN), move_bio, i);
 
                 if (move_bio->bi_vcnt == ZNS_WRITE_GRAN){
-                  printk(KERN_INFO "[%s::%d] (%d) SUBMIT! %p\n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN), move_bio);
+//                  printk(KERN_INFO "[%s::%d] (%d) SUBMIT! %p\n", __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN), move_bio);
                   submit_bio(move_bio);
                 }
                 else if (((buffer_pos / ZNS_WRITE_GRAN) == 21) && !((buffer_pos+1)%ZNS_GC_PAGES)){
+#if 0
                   printk(KERN_INFO "[%s::%d] (%d) (%dth) Partially SUBMIT %d pages! %p (%dth)\n", 
                   __func__, __LINE__, (buffer_pos / ZNS_WRITE_GRAN), i, move_bio->bi_vcnt, move_bio, i);
+#endif
                   submit_bio(move_bio);
                 }
 
@@ -6351,8 +6429,8 @@ end_round:
 		spin_unlock(&from_zone->slot_lock[cluster]);
         /* we finished the batch / the whole reclaim.
          * lets submit the reads, then take care of the writes */
-        //if (!first)
-           //blk_finish_plug(&plug);
+        if (!first)
+           blk_finish_plug(&plug);
 
 	/* save the state */
 	WRITE_ONCE(zi->rctx.last_pos, i);

@@ -325,6 +325,7 @@ struct reclaim_ctx {
 	struct bio *move_bios[ZNS_GC_PAGES];
 	enum status stat;
 	int from_zone;
+        int last_bio;
 };
 struct swap_zone {
 	atomic_t count;		/* Number of available slots in a zone */

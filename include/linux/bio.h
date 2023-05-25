@@ -117,8 +117,11 @@ static inline void *bio_data(struct bio *bio)
 static inline bool bio_full(struct bio *bio, unsigned len)
 {
 	if (bio->bi_vcnt >= bio->bi_max_vecs){
+          if(bio->bi_opf & REQ_SWAP_MET){
                 printk("[%s::%s::%d] {%p} bio->biMaxVec=%d\n",
                 __FILE__, __func__, __LINE__, bio, bio->bi_max_vecs);
+                dump_stack();
+          }
 		return true;
         }
 
