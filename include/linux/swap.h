@@ -286,9 +286,9 @@ struct swap_cluster_list {
 };
 
 /* 4MiB buffer */
-#define ZNS_GC_ORDER 10 /* page order */
+#define ZNS_GC_ORDER 6 /* page order */
 #define ZNS_WRITE_GRAN 48 /* 48 pages = 192KB */
-#define ZNS_GC_BYTES (1UL << (ZNS_GC_ORDER + PAGE_SHIFT))
+#define ZNS_GC_BYTES 192*1024
 #define ZNS_GC_PAGES (ZNS_GC_BYTES >> 12)
 #define ZNS_GC_BIOS ((ZNS_GC_PAGES / ZNS_WRITE_GRAN) + 1UL)
 
