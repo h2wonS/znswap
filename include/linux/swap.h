@@ -318,14 +318,18 @@ enum alloc_policy {
 
 struct reclaim_ctx {
 	struct page *buffer;
+	struct page *buffer_wait;
 	atomic_t finished_read;
 	atomic_t finished_write;
 	unsigned int num_pages;
 	unsigned int last_pos;
-	struct bio *move_bios[ZNS_GC_PAGES];
+	struct bio *rmove_bios[ZNS_GC_PAGES];
+	struct bio *wmove_bios[ZNS_GC_PAGES];
 	enum status stat;
 	int from_zone;
         int last_bio;
+        int iswaiting;
+        bool islastturn;
 };
 struct swap_zone {
 	atomic_t count;		/* Number of available slots in a zone */

@@ -654,7 +654,6 @@ struct page *read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 			vma, addr, &page_was_allocated);
 
 	if (page_was_allocated){
-            printk("[%s::%s::%d] PAGEWASALLOC\n", __FILE__, __func__, __LINE__);
 		swap_readpage(retpage, do_poll);
         }
 
