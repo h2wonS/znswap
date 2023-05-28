@@ -383,6 +383,7 @@ struct zns_swap_info_struct {
 	unsigned long flags;
         unsigned int start_bucket_order;
         atomic_t current_gc_zone;
+        atomic_t current_gc_zone_slot;
 };
 
 /* API structs */

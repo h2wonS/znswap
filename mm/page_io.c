@@ -78,7 +78,18 @@ void end_swap_bio_write(struct bio *bio)
             /* no lock is required here, since the writeback is cleared
              * after the update, and page private is inspected only if
              * writeback is off */
-            new_off = (bio->bi_iter.bi_sector >> 3) + i;
+          new_off = (bio->bi_iter.bi_sector >> 3) + i;
+          struct swap_info_struct *sis = page_swap_info(cur_page);
+          struct request_queue *q = bio->bi_bdev->bd_disk->queue;
+          long slot;
+          sector_t zone_start = (blk_queue_zone_sectors(q) >> 3) * swp_offset(entry);
+          slot = (unsigned long) new_off - (unsigned long)zone_start;
+          if(zone_start == atomic_read(&sis->zns_swap->current_gc_zone)){
+            printk(KERN_INFO "SWAPoutZone=%d GCzone=%d || Swapoutslot=%d GCzoneslot=%d\n", 
+                swp_offset(entry), atomic_read(&sis->zns_swap->current_gc_zone), slot, atomic_read(&sis->zns_swap->current_gc_zone_slot));
+            if( (slot == atomic_read(&sis->zns_swap->current_gc_zone_slot)) && (swp_offset(entry) == atomic_read(&sis->zns_swap->current_gc_zone)) )
+                  BUG();
+          }
             set_page_private(cur_page, zns_tmp_swp_entry(swp_type(entry), new_off).val);
             add_to_zswap(cur_page);
         } else if (PageSwapBacked(cur_page) && PageSwapCache(cur_page) && is_zns_swp_entry(entry)) {
@@ -422,11 +433,9 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
         }
 
         zone_start = (sis->zns_swap->zone_size << 3) *  swp_offset(entry);
-        BUG_ON(swp_offset(entry) == atomic_read(&sis->zns_swap->current_gc_zone));
 
         swap_bio[swp_idx]->bi_opf |= REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
         swap_bio[swp_idx]->bi_iter.bi_sector = zone_start;
-
         swap_bio[swp_idx]->bi_end_io = end_write_func;
         bio_add_page(swap_bio[swp_idx], page, PAGE_SIZE, 0);
 

@@ -1037,6 +1037,7 @@ static inline bool alloc_swap_slot(struct zns_swap_info_struct *zi,
 		int cur_zone_slot;
 
 		if(unlikely(is_gc_zone)) {
+                  printk("may be 0 => is_gc_zone=%d(inuse=%d)\n", is_gc_zone, atomic_read(&zi->gc_in_use));
 			atomic_set(&zi->gc_in_use, -1);
 			return true;
 		}
@@ -1289,17 +1290,21 @@ static inline int get_zone_from_slot(struct zns_swap_info_struct *zi,
 	cur_zone = atomic_read(&zi->open_zones[cur_zone_slot]);
 
 	/* someone is already allocating a new zone for us */
-	if (unlikely(is_gc && cur_zone < 0))
+	if (unlikely(is_gc && cur_zone < 0)){
 		return -1;
+        }
 
-	if (unlikely(cur_zone == -2))
+	if (unlikely(cur_zone == -2)){
 		return -1;
+        }
 
 	if (unlikely(cur_zone == -1)) {
 		/* check if someone else is racing against us allocating a zone
 		 * here*/
-		if(unlikely(atomic_cmpxchg(cur_zone_ptr, -1, -2) != -1))
+		if(unlikely(atomic_cmpxchg(cur_zone_ptr, -1, -2) != -1)){
+                  printk(KERN_INFO "FUCK!! RACING!\n");
 			return -1;
+                }
 
 		/* we are allocating a new zone and also trying to open it */
 		alloced = allocate_free_zone(zi, cur_zone_ptr, is_gc,
@@ -1308,6 +1313,7 @@ static inline int get_zone_from_slot(struct zns_swap_info_struct *zi,
 		VM_BUG_ON(!is_gc && !alloced);
 
 		if (unlikely(!alloced)) {
+                  printk(KERN_INFO "FUCK!! weR GC, but cannot alloced!\n");
 			atomic_set(cur_zone_ptr, -1);
 			return -1;
 		}
@@ -1321,6 +1327,7 @@ static inline int get_zone_from_slot(struct zns_swap_info_struct *zi,
 		if (try_activate_zone(zi, cur_zone))
 			return cur_zone;
 
+                  printk(KERN_INFO "FUCK!! no resources in this zone=%d\n", cur_zone);
 		return -1;
 	}
 
@@ -1346,8 +1353,9 @@ static inline int gc_swap_new_zone(struct zns_swap_info_struct *zi,
 
 use_emergency:
 	gc_zone_num = atomic_read(&zi->emergency_gc_zone);
+                atomic_set(&zi->current_gc_zone, gc_zone_num);
 	atomic_set(&zi->emergency_gc_zone, -1);
-	pr_info("using emergency zone %d!\n", gc_zone_num);
+	pr_info("GC:: using emergency zone %d!\n", gc_zone_num);
 
 set_found_zone:
 	VM_BUG_ON(gc_zone_num < 0);
@@ -1355,6 +1363,7 @@ set_found_zone:
 	WRITE_ONCE(gc_zone->cur_open_slot, from_zone_slot);
 	atomic_set(&gc_zone->open, 1);
 	atomic_set(&zi->gc_in_use, gc_zone_num);
+        printk(KERN_INFO "gcZONE=%d GCINUSE=%d\n", gc_zone_num, atomic_read(&zi->gc_in_use));
 
 	while (!try_activate_zone(zi, gc_zone_num))
 		cond_resched();
@@ -1377,9 +1386,10 @@ retry_new_zone:
 
 	/* first determine if we are still using a zone which we opened */
 	gc_zone_num = atomic_read(&zi->gc_in_use);
+                atomic_set(&zi->current_gc_zone, gc_zone_num);
 	if (unlikely(gc_zone_num >= 0)) {
 		if(likely(alloc_swap_slot(zi, gc_zone_num, NULL, true))) {
-                  atomic_set(&zi->current_gc_zone, gc_zone_num);
+                  printk("GC:: We use inuse GC ZONE %d\n", gc_zone_num);
 			return gc_zone_num;
 		}
 	}
@@ -1402,7 +1412,6 @@ retry_new_zone:
 			goto retry_next_slot;
 
 		found = true;
-                atomic_set(&zi->current_gc_zone, gc_zone_num);
 		break;
 
 retry_next_slot:
@@ -1410,14 +1419,19 @@ retry_next_slot:
 	}
 
 	if (found) {
+                atomic_set(&zi->current_gc_zone_slot, gc_zone_num_slot);
+                atomic_set(&zi->current_gc_zone, gc_zone_num);
 		return gc_zone_num;
 	} else {
 		gc_zone_num = gc_swap_new_zone(zi, test_bit(ZNS_SWAP_SUSPEND,
 					&zi->flags), gc_orig_zone_num_slot);
 
+                printk("GC:: We use New GC ZONE (maybe emergency)%d\n", gc_zone_num);
 		if (gc_zone_num == -1)
 			goto retry_new_zone;
 
+                atomic_set(&zi->current_gc_zone_slot, gc_orig_zone_num_slot);
+                atomic_set(&zi->current_gc_zone, gc_zone_num);
 		return gc_zone_num;
 	}
 	return -1;
@@ -1437,14 +1451,19 @@ static int zns_swap_map_slots(struct swap_info_struct *si, swp_entry_t slots[],
 		cur_zone_slot = get_zns_zone_slot(zi, page, sp);
 		VM_BUG_ON(cur_zone_slot >= zi->max_open_zones);
 
-          // isGC -> False
 		zone = get_zone_from_slot(zi, cur_zone_slot, false);
 
-		if (unlikely(zone == -1 || zone == atomic_read(&zi->current_gc_zone))) {
+		if (unlikely(zone == -1)) {
 			if (retry == 3){
 				return 0;
                         }
-
+#if 0
+                        if (test_bit(ZNS_SWAP_UNDER_GC, &zi->flags) |
+                              test_bit(ZNS_SWAP_SUSPEND, &zi->flags)){
+                            printk("FUCK SHIT!! GC:: SWAP SLEEP!!\n");
+                            dump_stack();
+                            }
+#endif
 			cond_resched();
 			retry++;
 			continue;
@@ -4514,6 +4533,8 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 			zi->rctx.rmove_bios[i] = bio_alloc(GFP_KERNEL, 48);
 		}
 
+                atomic_set(&zi->current_gc_zone, 0);
+                atomic_set(&zi->current_gc_zone_slot, 0);
 		zns_en = true;
 		zns_si = p;
 		zns_sz = swap_zones;
@@ -5401,6 +5422,7 @@ static void end_zone_reset(struct bio *bio)
 		}
 	}
 	atomic_inc(&zi->free_zones);
+        printk("Reset zone#%ld increased FreeZone=%d\n", sz_num, atomic_read(&zi->free_zones));
 }
 
 void wakeup_kznsd (struct zns_swap_info_struct *zi) {
@@ -5732,10 +5754,19 @@ static void end_zns_gc_write(struct bio *bio)
           if (bio->padded){
             if (i == (bio->bi_vcnt - bio->padded)){
               int j;
+              new_zone = (bio->bi_iter.bi_sector >> 3) / 24576;
               for(j=0; j<bio->padded; j++){
                 free_page(bio->pad_list[j]);
+                slot_count = atomic_inc_return(&si->zns_swap->swap_zones[new_zone].slot_count);
               }
                 printk("FREED! %d pages\n", bio->padded);
+                if (slot_count == zi->zone_capacity) {
+                  unsigned int spos;
+                  spos = atomic_read(&zi->swap_zones[new_zone].count);
+                  printk(KERN_INFO "%dth Padpage GC ZONE is FULL(slotcnt==24576) -> should be closed! (cnt=%d)\n", i, spos);
+                  atomic_set(&zns_si->zns_swap->swap_zones[new_zone].open, 3);
+                  atomic_inc(&zns_si->zns_swap->available_open_zones);
+                }
               break;
             }
           }
@@ -5774,14 +5805,15 @@ static void end_zns_gc_write(struct bio *bio)
           slot_count = atomic_inc_return(&si->zns_swap->swap_zones[new_zone].slot_count);
 
           if (slot_count == zi->zone_capacity) {
-            printk(KERN_INFO "[%s::%d] GC ZONE is FULL -> should be closed!\n", __func__, __LINE__);
+            unsigned int spos;
+            spos = atomic_read(&zi->swap_zones[new_zone].count);
+            printk(KERN_INFO "%dth page GC ZONE is FULL(slotcnt==24576) -> should be closed! (cnt=%d)\n", i, spos);
             atomic_set(&zns_si->zns_swap->swap_zones[new_zone].open, 3);
             atomic_inc(&zns_si->zns_swap->available_open_zones);
           }
 
         }
           if (pages_write == zi->rctx.num_pages){
-            printk("WAKE UP endio\n");
             wakeup_kznsd(zi);
           }
 }
@@ -5824,7 +5856,6 @@ static void end_zns_gc_read(struct bio *bio)
         pages_read = atomic_inc_return(&zi->rctx.finished_read);
 
         if (pages_read == zi->rctx.num_pages){
-            printk("WAKE UP endio\n");
 		wakeup_kznsd(zi);
         }
 
@@ -5882,14 +5913,11 @@ static void gc_move_zone_activate(struct zns_swap_info_struct *zi)
         num_pages = zi->rctx.num_pages;
         retry = 0;
         move_bio = zi->rctx.wmove_bios[zi->rctx.last_bio];
-        printk(KERN_INFO "move_bio(%p) idx=%d num_pages=%d\n", move_bio, zi->rctx.last_bio, num_pages);
 
         for(j = 0; j < move_bio->bi_vcnt; j++){
           if(move_bio->padded){
-            if(j == (move_bio->bi_vcnt - move_bio->padded)){
-              printk("isPadded bio(j=%d last=%d) -> padded %d pages in vcnt=%d %dthPage\n", j, zi->rctx.last_bio, move_bio->padded, move_bio->bi_vcnt, j);
+            if(j == (move_bio->bi_vcnt - move_bio->padded))
               break;
-            }
           }
           move_page = move_bio->bi_io_vec[j].bv_page;
           src_addr.val = page_private(move_page);
@@ -6119,11 +6147,10 @@ retry_new_slot:
 			is_gc_zone = (atomic_read(&zi->gc_in_use) >= 0);
 			blk_start_plug(&plug);
 		} else {
-                        unsigned int spos;
-                        spos = atomic_read(&zi->swap_zones[gc_zone_num].count);
 			if(unlikely(!alloc_swap_slot(zi, gc_zone_num, NULL, is_gc_zone))) {
 				blk_finish_plug(&plug);
 				gc_zone_num = -1;
+                atomic_set(&zi->current_gc_zone, gc_zone_num);
 				goto retry_new_slot;
 			}
 		}
@@ -6135,14 +6162,17 @@ retry_new_slot:
 
 		/* where to actually write the data */
 		zone_start =  (zi->zone_size << 3) * gc_zone_num;
+
                 if (!(dst_index % ZNS_WRITE_GRAN)){ 
                   // only enter i == 0 (for the first page of 48)
                   bio_reset(move_bio);
                   move_bio->bi_opf = REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
                   bio_set_dev(move_bio, zi->si->bdev);
-                  printk(KERN_INFO "[%s::%d] START RESET %dth BIO %p %dth Page Zone(%lld), #From%d To%d# dst_index=%d\n", __func__, __LINE__, dst_index/ZNS_WRITE_GRAN, move_bio, i, zone_start, from_zone_num,  gc_zone_num, dst_index);
                   move_bio->bi_end_io = end_zns_gc_write;
                 }
+                  move_bio->bi_opf = REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
+                  bio_set_dev(move_bio, zi->si->bdev);
+                  move_bio->bi_end_io = end_zns_gc_write;
                 move_bio->bi_iter.bi_sector = zone_start;
 
                 if (zi->zns_cgroup_account) {
@@ -6171,7 +6201,7 @@ retry_new_slot:
                 bio_add_page(move_bio, move_page, PAGE_SIZE, 0);
 
                 if (move_bio->bi_vcnt == ZNS_WRITE_GRAN){
-#if 1
+#if 0
                   printk(KERN_INFO "[%s::%d] movebio SUBMIT! i=%d (%dpages) %p biSector=%lld zone=%lld dst_index=%d\n",
                   __func__, __LINE__, i, move_bio->bi_vcnt, move_bio, move_bio->bi_iter.bi_sector, (move_bio->bi_iter.bi_sector >> 3)/24576, dst_index);
 #endif
@@ -6179,9 +6209,9 @@ retry_new_slot:
                   zi->rctx.last_bio = dst_index / ZNS_WRITE_GRAN;                  // should be 0
 
                   if(zi->rctx.iswaiting){
-                    printk(KERN_INFO "Page(%d) of waiting (total %d of nump=%d)-> \n", i, zi->rctx.iswaiting, num_pages);
                     zi->rctx.iswaiting = 0;
                     dst_index++;
+                    printk(KERN_INFO "Page(%d) of waiting (total %d of nump=%d, dst_idx=%d)-> \n", i, zi->rctx.iswaiting, num_pages, dst_index);
                     goto try_submit_waiting;
                   }
                 }
@@ -6196,6 +6226,12 @@ retry_new_slot:
                   
                   for(j = 0; j < pad; j++){
 
+                    int scnt, cnt;
+                    cnt = atomic_read(&zi->swap_zones[gc_zone_num].count);
+                    scnt = atomic_read(&zi->swap_zones[gc_zone_num].slot_count);
+                    if(cnt != scnt)
+                      printk(KERN_INFO "%dth page(of %d pad) Zone%d scnt=%d cnt=%d\n",
+                      i, j, gc_zone_num, scnt, cnt);
                     spos = atomic_inc_return(&zi->swap_zones[gc_zone_num].count) - 1;
                     if(spos >= zi->zone_capacity){
                       printk(KERN_INFO "%dth Pad of %d is over the target zone! spos=%d .. Maybe It doesn't need to pad\n", j, pad, spos);
@@ -6210,8 +6246,8 @@ retry_new_slot:
                     if(spos == zi->zone_capacity -1){
                       int cur_z_slot;
 
-                      if(is_gc_zone) {
-                        printk("After adding %dth Pad of %d is full now, should close the zone(spos=%d)\n", j, pad, spos+1);
+                      if(unlikely(is_gc_zone)) {
+                        printk("IsGCZONE=%d After adding %dth Pad of %d is full now, should close the zone(spos=%d)\n", is_gc_zone, j, pad, spos+1);
                         atomic_set(&zi->gc_in_use, -1);
                         bio_add_page(move_bio, pad_page, PAGE_SIZE, 0);
                         move_bio->padded++;
@@ -6230,17 +6266,17 @@ retry_new_slot:
                     move_bio->pad_list[j] = (unsigned long) page_address(pad_page);
                     bio_add_page(move_bio, pad_page, PAGE_SIZE, 0);
                     move_bio->padded++;
-                    printk("%dth Pad Added with spos=%d\n", j, spos+1);
                   }
 
                   if(is_over_zone && (move_bio->bi_vcnt != ZNS_WRITE_GRAN)){
                     printk(KERN_INFO "{%p} %dth movebio Pad is over zone, %dth Page RetryNewSlot(Zone) padded=%d(shouldbe 0) movebio_Vcnt=%d \n", move_bio, dst_index / ZNS_WRITE_GRAN, i, move_bio->padded, move_bio->bi_vcnt);
 		    blk_finish_plug(&plug);
                     gc_zone_num = -1;
+                atomic_set(&zi->current_gc_zone, gc_zone_num);
                     goto retry_new_slot;
                   }
 
-#if 1
+#if 0
                   spos = atomic_read(&zi->swap_zones[gc_zone_num].count);
                   zi->rctx.last_bio = dst_index / ZNS_WRITE_GRAN;
                   printk(KERN_INFO "[%s::%d] %dth movebio (%dth page) Partially SUBMIT %d pages!(padded=%d(%d)) %p (%dth) biSector=%lld Zone=%lld dst_index=%d spos=%d\n", 
@@ -6255,8 +6291,8 @@ retry_new_slot:
 
                 else if ( i == (num_pages -1) && !(zi->rctx.islastturn) ){
                   zi->rctx.iswaiting = ZNS_WRITE_GRAN - move_bio->bi_vcnt;
-                  printk(KERN_INFO "i=%d th Page still have more space VCNT(%d) slots, Should Wait(%d)\n",
-                  i, move_bio->bi_vcnt, zi->rctx.iswaiting);
+                  printk(KERN_INFO "i=%d th of %d Page still have more space VCNT(%d) slots, Should Wait(%d)\n",
+                  i, num_pages, move_bio->bi_vcnt, zi->rctx.iswaiting);
                   blk_finish_plug(&plug);
                   WRITE_ONCE(zi->rctx.stat, ZNS_GC_IDLE);
 		  atomic_set(&zi->rctx.finished_read, 0);
@@ -6273,13 +6309,15 @@ retry_new_slot:
 try_submit_waiting:    
 
 	if (src_cluster != -1 && !try_submit_last){
+          printk("FUCK try_submit_last =%d\n", try_submit_last);
 		spin_unlock(&sz_src->slot_lock[src_cluster]);
         }
 
 	blk_finish_plug(&plug);
 	WRITE_ONCE(zi->rctx.num_pages, dst_index);
 	count_vm_events(PZNS_GCWRITE, dst_index);
-#if 1
+#if 1  
+        if(zi->rctx.last_pos == 24576)
         printk(KERN_INFO "[%s::%d] (%d) %p numpages=%d last_pos=%d dst_index=%d the last bio=%d\n",
         __func__, __LINE__, i, move_bio, zi->rctx.num_pages, zi->rctx.last_pos, dst_index, zi->rctx.last_bio);
 #endif
@@ -6309,12 +6347,8 @@ static void gc_move_zone_read(struct zns_swap_info_struct *zi,
 	i = zi->rctx.last_pos;
         if(i >= (zi->zone_capacity - ZNS_WRITE_GRAN)){
           zi->rctx.islastturn = true;
-          printk(KERN_INFO "last_pos=%d islastturn=%d\n", i, zi->rctx.islastturn);
         }
 	first = true;
-        if(zi->rctx.iswaiting){
-          printk(KERN_INFO "isWaiting=%d\n", zi->rctx.iswaiting);
-        }
 
 	for (; i < zi->zone_capacity; i++)
 	{
@@ -6450,7 +6484,6 @@ end_round:
 	/* save the state */
 	WRITE_ONCE(zi->rctx.last_pos, i);
 	WRITE_ONCE(zi->rctx.num_pages, buffer_pos);
-        printk(KERN_INFO "[%s::%d] (%d) (%dth)ENDROUND %p bufpos=%d lastpos(i)=%d numpages(bufp)=%d\n", __func__, __LINE__, buffer_pos, i, move_bio, buffer_pos, zi->rctx.last_pos, zi->rctx.num_pages);
 
 	if (!first)
 		WRITE_ONCE(zi->rctx.stat, ZNS_GC_READING);
@@ -6497,7 +6530,7 @@ static inline bool check_suspend(struct zns_swap_info_struct *zi)
 		return false;
 	}
 
-	//set_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
+	set_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
 	return true;
 }
 static inline bool check_high_wmark(struct zns_swap_info_struct *zi)
@@ -6540,7 +6573,7 @@ static inline bool check_low_wmark(struct zns_swap_info_struct *zi)
 	potential_free_zones = gc_calc_potential(zi);
 
 	if (potential_free_zones > 1) {
-		//set_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
+		set_bit(ZNS_SWAP_UNDER_GC, &zi->flags);
 		return true;
 	}
 
@@ -6636,7 +6669,12 @@ again:
 			if (victim == -1)
 				return;
 			zi->rctx.from_zone = victim;
+                        printk(KERN_INFO "CURRENT VICTIM ZONE = %d\n", zi->rctx.from_zone);
                 }
+                else if(zi->rctx.iswaiting){
+                  victim = zi->rctx.from_zone;
+                  printk(KERN_INFO "IS WAITING CURRENT VICTIM ZONE = %d\n", zi->rctx.from_zone);
+                }                
 		gc_move_zone_read(zi, victim);
 		fallthrough;
 	case ZNS_GC_READING:
