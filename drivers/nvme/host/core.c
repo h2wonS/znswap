@@ -910,6 +910,7 @@ blk_status_t nvme_setup_cmd(struct nvme_ns *ns, struct request *req,
 	case REQ_OP_ZONE_RESET_ALL:
 	case REQ_OP_ZONE_RESET:
 		ret = nvme_setup_zone_mgmt_send(ns, req, cmd, NVME_ZONE_RESET);
+                printk(KERN_INFO "ret=%d slba=%ld(zone=%ld)\n", ret, cmd->zms.slba, (cmd->zms.slba / 24576));
 		break;
 	case REQ_OP_ZONE_OPEN:
 		ret = nvme_setup_zone_mgmt_send(ns, req, cmd, NVME_ZONE_OPEN);

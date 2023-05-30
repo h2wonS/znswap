@@ -36,12 +36,14 @@ void end_swap_bio_write(struct bio *bio)
     int i;
     struct page *cur_page;
     unsigned long new_off;
+    unsigned long flags;
     swp_entry_t entry;
  
     if(bio->tmp != 0xbbbbbbbb){
         BUG();
     }
 
+    local_irq_save(flags);
     for(i = 0; i < (int)bio->bi_vcnt; i++){
         WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED));
         cur_page = bio->bi_io_vec[i].bv_page;
@@ -50,6 +52,7 @@ void end_swap_bio_write(struct bio *bio)
         if (bio->bi_status) {
             struct request_queue *q = bio->bi_bdev->bd_disk->queue;
             long slot;
+            dump_stack();
             sector_t zone_start = (blk_queue_zone_sectors(q) >> 3) *
                 swp_offset(entry);
             new_off = bio->bi_iter.bi_sector >> 3;
@@ -57,7 +60,7 @@ void end_swap_bio_write(struct bio *bio)
 
             SetPageError(cur_page);
             slot = (unsigned long)new_off - (unsigned long)zone_start;
-            pr_info("%lu: {%p} Error on swap zone: %lu slot to %d zone!\n", swp_offset(entry), bio, new_off, new_zone);
+            pr_info("%lu: {%p} Error on swap zone: %lu slot to %d zone!\n", swp_offset(entry), bio, slot, new_zone);
             BUG();
             /*
              * We failed to write the page out to swap-space.
@@ -90,6 +93,10 @@ void end_swap_bio_write(struct bio *bio)
             if( (slot == atomic_read(&sis->zns_swap->current_gc_zone_slot)) && (swp_offset(entry) == atomic_read(&sis->zns_swap->current_gc_zone)) )
                   BUG();
           }
+
+          if(zone_start == atomic_read(&sis->zns_swap->resetting_zone)){
+                  BUG();
+          }
             set_page_private(cur_page, zns_tmp_swp_entry(swp_type(entry), new_off).val);
             add_to_zswap(cur_page);
         } else if (PageSwapBacked(cur_page) && PageSwapCache(cur_page) && is_zns_swp_entry(entry)) {
@@ -97,6 +104,7 @@ void end_swap_bio_write(struct bio *bio)
         }
         end_page_writeback(cur_page);
     } 
+    local_irq_restore(flags);
 	bio_put(bio);
 }
 
@@ -343,7 +351,7 @@ static void bio_associate_blkg_from_page(struct bio *bio, struct page *page)
 #define CHUNK_SIZE 192 * 1024
 #define CHUNK_BUF_SIZE 48
 
-struct bio *swap_bio[5000] = { 0, };
+//struct bio *swap_bio[6000] = { 0, };
 DEFINE_SPINLOCK(my_bio_lock);
 
 int __swap_writepage(struct page *page, struct writeback_control *wbc,
@@ -371,6 +379,8 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
     spin_lock_irqsave(&my_bio_lock, flag);
 
     sis = page_swap_info(page);
+    struct zns_swap_info_struct *zi;
+    zi = sis->zns_swap;
     VM_BUG_ON_PAGE(!PageSwapCache(page), page);
 
     if (data_race(sis->flags & SWP_FS_OPS)) {
@@ -421,34 +431,36 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
     if (is_zns_tmp_swp_entry(entry)) {
         unsigned long long swp_idx = swp_offset(entry);
 
-        if(!swap_bio[swp_idx]){
-            swap_bio[swp_idx] = bio_alloc(GFP_NOIO, 48);
-            if(!swap_bio[swp_idx]){
+        if(!zi->swap_bios[swp_idx]){
+            zi->swap_bios[swp_idx] = bio_alloc(GFP_NOIO, 48);
+            if(!zi->swap_bios[swp_idx]){
                 BUG();
                 return -ENOMEM;
             }
 
-            bio_set_dev(swap_bio[swp_idx], sis->bdev);
-            swap_bio[swp_idx]->bi_opf = REQ_SWAP | wbc_to_write_flags(wbc);
+            bio_set_dev(zi->swap_bios[swp_idx], sis->bdev);
+            zi->swap_bios[swp_idx]->bi_opf = REQ_SWAP | wbc_to_write_flags(wbc);
         }
 
         zone_start = (sis->zns_swap->zone_size << 3) *  swp_offset(entry);
+        if(zone_start == atomic_read(&sis->zns_swap->resetting_zone)){
+                  BUG();
+        }
+        zi->swap_bios[swp_idx]->bi_opf |= REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
+        zi->swap_bios[swp_idx]->bi_iter.bi_sector = zone_start;
+        zi->swap_bios[swp_idx]->bi_end_io = end_write_func;
+        bio_add_page(zi->swap_bios[swp_idx], page, PAGE_SIZE, 0);
 
-        swap_bio[swp_idx]->bi_opf |= REQ_OP_ZONE_APPEND | REQ_SWAP_MET;
-        swap_bio[swp_idx]->bi_iter.bi_sector = zone_start;
-        swap_bio[swp_idx]->bi_end_io = end_write_func;
-        bio_add_page(swap_bio[swp_idx], page, PAGE_SIZE, 0);
-
-        bio_associate_blkg_from_page(swap_bio[swp_idx], page);
+        bio_associate_blkg_from_page(zi->swap_bios[swp_idx], page);
         count_swpout_vm_event(page);
         set_page_writeback(page);
         unlock_page(page);
 
-        if((int)(swap_bio[swp_idx]->bi_vcnt) == CHUNK_BUF_SIZE){
+        if((int)(zi->swap_bios[swp_idx]->bi_vcnt) == CHUNK_BUF_SIZE){
 
             struct bio* new_bio;
-            new_bio = swap_bio[swp_idx];
-            swap_bio[swp_idx] = NULL;
+            new_bio = zi->swap_bios[swp_idx];
+            zi->swap_bios[swp_idx] = NULL;
 
             new_bio->tmp = 0xbbbbbbbb;
             spin_unlock_irqrestore(&my_bio_lock, flag);

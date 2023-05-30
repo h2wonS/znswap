@@ -312,8 +312,6 @@ int add_to_swap(struct page *page, struct swappolicy *sp,
 		return 2;
 	}
 
-        printk(KERN_INFO "[%s::%s::%d] SHIT!!!\n", __FILE__, __func__, __LINE__);
-
 	/*
 	 * XArray node allocations from PF_MEMALLOC contexts could
 	 * completely exhaust the page allocator. __GFP_NOMEMALLOC

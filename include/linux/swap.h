@@ -383,7 +383,9 @@ struct zns_swap_info_struct {
 	unsigned long flags;
         unsigned int start_bucket_order;
         atomic_t current_gc_zone;
+        atomic_t resetting_zone;
         atomic_t current_gc_zone_slot;
+        struct bio **swap_bios;
 };
 
 /* API structs */
@@ -730,6 +732,7 @@ static inline void check_zone_w_inv(struct zns_swap_info_struct *zi, int zone, i
 
 	cap -= invalids;
 	if (!cap) {
+          printk(KERN_INFO "[%s::%d] zone=%d has no cap\n", __func__, __LINE__, zone);
 		reset_swap_zone(zi, zone);
 		return;
 	}

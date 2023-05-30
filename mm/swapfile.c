@@ -45,6 +45,8 @@
 #include <asm/tlbflush.h>
 #include <linux/swapops.h>
 #include <linux/swap_cgroup.h>
+#include <linux/timer.h>
+#include <linux/delay.h>
 
 static bool swap_count_continued(struct swap_info_struct *, pgoff_t,
 				 unsigned char);
@@ -1971,6 +1973,8 @@ static struct swap_info_struct *swap_info_get_cont(swp_entry_t entry,
 					struct swap_info_struct *q)
 {
 	struct swap_info_struct *p;
+        printk("FUCK!!!\n");
+        BUG();
 
 	p = _swap_info_get(entry);
 
@@ -2139,9 +2143,9 @@ static int __swap_entry_free(struct swap_info_struct *p,
 		unlock_cluster_or_swap_info(p, ci);
 	}
 
-	if (!usage)
+	if (!usage){
 		free_swap_slot(entry);
-
+        }
 	return usage;
 }
 
@@ -2160,6 +2164,8 @@ void _swap_entry_free(struct swap_info_struct *p, swp_entry_t entry, bool remove
 	int zone;
 	pgoff_t zone_off;
 	int invalids;
+        bool isResetted;
+        isResetted = false;
 
 	if (p->zns_swap) {
 		zi = p->zns_swap;
@@ -2172,8 +2178,11 @@ void _swap_entry_free(struct swap_info_struct *p, swp_entry_t entry, bool remove
 		*swap_map_target= 0;
 		spin_unlock(sl);
 		invalids = atomic_inc_return(&zi->swap_zones[zone].invalid);
+                if(invalids == zi->zone_capacity)
+                  isResetted = true;
 		check_zone_w_inv(zi, zone, invalids);
 	} else {
+          BUG();
 		swap_map_target = &p->swap_map[offset];
 		ci = lock_cluster(p, offset);
 		count = *swap_map_target;
@@ -2183,8 +2192,14 @@ void _swap_entry_free(struct swap_info_struct *p, swp_entry_t entry, bool remove
 		unlock_cluster(ci);
 	}
 
+        if(isResetted)
+                  printk(KERN_INFO "[%s::%d]\n", __func__, __LINE__);
 	mem_cgroup_uncharge_swap(entry, 1);
+        if(isResetted)
+                  printk(KERN_INFO "[%s::%d]\n", __func__, __LINE__);
 	_swap_range_free(p, offset, 1, remove_shadow);
+        if(isResetted)
+                  printk(KERN_INFO "[%s::%d]\n", __func__, __LINE__);
 }
 
 /*
@@ -2198,6 +2213,8 @@ void swap_free(swp_entry_t entry)
 	p = _swap_info_get(entry);
 	if (p)
 		__swap_entry_free(p, entry, false);
+
+        else BUG();
 }
 
 
@@ -3707,6 +3724,9 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 	if (p->zns_swap) {
 		struct zns_swap_info_struct *zi = p->zns_swap;
 		int i;
+
+                kfree(zi->swap_bios);
+
 		for (i = 0; i < zi->num_zones; i++) {
 			kfree(zi->swap_zones[i].swap_map);
 			kvfree(zi->swap_zones[i].mapping_arr);
@@ -4286,6 +4306,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 	bool inced_nr_rotate_swap = false;
 	struct request_queue *q;
 	struct zns_swap_info_struct *zi = NULL;
+        struct bio **swap_bios = NULL;
 
 	if (swap_flags & ~SWAP_FLAGS_VALID)
 		return -EINVAL;
@@ -4449,6 +4470,7 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		zns_init_sysfs(zi);
 		zns_init_policy(zi, queue_max_open_zones(q));
 		pr_info("Free zones %d\n", atomic_read(&zi->free_zones));
+		pr_info("Num zones %d\n", zi->num_zones);
 
 		maxpages = zi->zone_capacity * zi->num_zones;
 		p->highest_bit = maxpages - 1;
@@ -4459,6 +4481,12 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 			goto bad_swap;
 		}
 
+                swap_bios = kzalloc((zi->num_zones * 10), GFP_ATOMIC);
+                if(!swap_bios){
+                  error = -ENOMEM;
+                  goto bad_swap;
+                }
+                
 		for (i = 0; i < zi->num_zones; i++) {
 			int nr_cluster, j;
 			bio_init(&swap_zones[i].reset_bio, NULL, 0);
@@ -4533,12 +4561,14 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 			zi->rctx.rmove_bios[i] = bio_alloc(GFP_KERNEL, 48);
 		}
 
+                atomic_set(&zi->resetting_zone, 0);
                 atomic_set(&zi->current_gc_zone, 0);
                 atomic_set(&zi->current_gc_zone_slot, 0);
 		zns_en = true;
 		zns_si = p;
 		zns_sz = swap_zones;
 		zi->swap_zones = swap_zones;
+		zi->swap_bios = swap_bios;
 		zi->si = p;
 		p->zns_swap = zi;
 		error = swap_cgroup_swapon(p->type, maxpages);
@@ -5381,9 +5411,15 @@ static void __init zns_swap_sysfs_init(void)
 		kobject_put(zns_swap_kobj);
 }
 
+//extern struct bio **swap_bio;
+
 inline void reset_swap_zone(struct zns_swap_info_struct *zi, unsigned int n)
 {
 	set_bit(n, zi->gc_waiting_bitmap);
+        printk("[%s::%d] Zone %d Test=%d\n", 
+        __func__, __LINE__, n, test_bit(n, zi->gc_waiting_bitmap));
+        BUG_ON(zi->swap_bios[n] != NULL);
+        atomic_set(&zi->resetting_zone, n);
 	smp_mb__after_atomic();
 	wakeup_kznsd(zi);
 }
@@ -5401,6 +5437,12 @@ static void end_zone_reset(struct bio *bio)
 		return;
 	}
 
+        if(bio->tmp != 0xcccccccc){
+          pr_info("This is not same bio! %p %d", bio, bio->tmp);
+          BUG();
+          return;
+        }
+
 	sz_num = (unsigned long)bio->bi_private;
 	sz = &zi->swap_zones[sz_num];
 
@@ -5416,17 +5458,21 @@ static void end_zone_reset(struct bio *bio)
 		old_gc_zone = atomic_cmpxchg(&zi->emergency_gc_zone,
 				emergency_zone, sz_num);
 		if(likely(old_gc_zone == emergency_zone)) {
+        printk("{%p} Reset zone#%ld increased FreeZone=%d stat=%d\n", 
+        bio, sz_num, atomic_read(&zi->free_zones), bio->bi_status);
 			pr_info("finished replenishing emergency GC zone %d\n",
 					atomic_read(&zi->emergency_gc_zone));
 			return;
 		}
 	}
 	atomic_inc(&zi->free_zones);
-        printk("Reset zone#%ld increased FreeZone=%d\n", sz_num, atomic_read(&zi->free_zones));
+        printk("{%p} Reset zone#%ld increased FreeZone=%d stat=%d\n", 
+        bio, sz_num, atomic_read(&zi->free_zones), bio->bi_status);
 }
 
 void wakeup_kznsd (struct zns_swap_info_struct *zi) {
 	if (!waitqueue_active(&zi->gc_wait)){
+          printk("INACTIVE WAIT Q\n");
 		return;
         }
 	wake_up_interruptible(&zi->gc_wait);
@@ -5435,21 +5481,34 @@ void wakeup_kznsd (struct zns_swap_info_struct *zi) {
 static void gc_reset_swap_zone(struct zns_swap_info_struct *zi, unsigned long n)
 {
 	int invalids = 0;
+        int cnt, scnt;
 
-	if (atomic_read(&zi->swap_zones[n].slot_count) != zi->zone_capacity)
+        scnt = atomic_read(&zi->swap_zones[n].slot_count);
+        cnt = atomic_read(&zi->swap_zones[n].count);
+
+	if (atomic_read(&zi->swap_zones[n].slot_count) != zi->zone_capacity){
+          printk("REJECT RESET Zone=%ld slot cnt = %d  cnt=%d\n", n, scnt, cnt);
 		return;
+        }
 
 	invalids = atomic_xchg(&zi->swap_zones[n].invalid, invalids);
-	if (!invalids)
+	if (!invalids){
+          printk("FUCK invalid == 0! so we cannot reset the zone %ld\n", n);
 		return;
+        }
 
 	bio_reset(&zi->swap_zones[n].reset_bio);
+        printk(KERN_INFO "BIO %p Reset Request of Zone%ld\n", &zi->swap_zones[n].reset_bio, n);
 	bio_set_dev(&zi->swap_zones[n].reset_bio, zi->si->bdev);
 	zi->swap_zones[n].reset_bio.bi_iter.bi_sector = n * (zi->zone_size << 3);
 	zi->swap_zones[n].reset_bio.bi_opf = REQ_OP_ZONE_RESET;
 	zi->swap_zones[n].reset_bio.bi_end_io = end_zone_reset;
 	zi->swap_zones[n].reset_bio.bi_private = (void *)n;
-	submit_bio(&zi->swap_zones[n].reset_bio);
+	zi->swap_zones[n].reset_bio.tmp = 0xcccccccc;
+        printk(KERN_INFO "Submit %p Reset Request of Zone%ld\n", &zi->swap_zones[n].reset_bio, n);
+	int res;
+        res = submit_bio(&zi->swap_zones[n].reset_bio);
+        printk(KERN_INFO "{%p} res=%d\n", current, res);
 }
 
 struct swap_walk_args {
@@ -5746,6 +5805,8 @@ static void end_zns_gc_write(struct bio *bio)
 	swp_entry_t entry;
         int i;
 
+        unsigned long flags;
+        local_irq_save(flags);
        for(i = 0; i < bio->bi_vcnt; i++){
 #if 0 
         printk(KERN_INFO "[%s::%d] {BIO: %p}'s %dth Page :: newzone=%lld bio->vcnt=%d\n", 
@@ -5813,6 +5874,7 @@ static void end_zns_gc_write(struct bio *bio)
           }
 
         }
+        local_irq_restore(flags);
           if (pages_write == zi->rctx.num_pages){
             wakeup_kznsd(zi);
           }
@@ -6034,6 +6096,7 @@ retry:
             BUG();
         }
 
+	zi->rctx.iswaiting = 0;
         zi->rctx.num_pages = 0;
         atomic_set(&zi->rctx.finished_read, 0);
         atomic_set(&zi->rctx.finished_write, 0);
@@ -6229,9 +6292,7 @@ retry_new_slot:
                     int scnt, cnt;
                     cnt = atomic_read(&zi->swap_zones[gc_zone_num].count);
                     scnt = atomic_read(&zi->swap_zones[gc_zone_num].slot_count);
-                    if(cnt != scnt)
-                      printk(KERN_INFO "%dth page(of %d pad) Zone%d scnt=%d cnt=%d\n",
-                      i, j, gc_zone_num, scnt, cnt);
+
                     spos = atomic_inc_return(&zi->swap_zones[gc_zone_num].count) - 1;
                     if(spos >= zi->zone_capacity){
                       printk(KERN_INFO "%dth Pad of %d is over the target zone! spos=%d .. Maybe It doesn't need to pad\n", j, pad, spos);
@@ -6256,7 +6317,7 @@ retry_new_slot:
                       }
 
                       cur_z_slot = zi->swap_zones[gc_zone_num].cur_open_slot;
-                      printk("Is No GC %dth Pad full !! should be closed curslotd=%d\n", j, cur_z_slot);
+                      printk("Is No GC %dth Pad full !! should be closed curslotd(swap_zone_id)=%d\n", j, cur_z_slot);
                       VM_BUG_ON(cur_z_slot >= zi->max_open_zones);
                       VM_BUG_ON(cur_z_slot < 0);
                       atomic_set(&zi->open_zones[cur_z_slot], -1);
@@ -6467,6 +6528,7 @@ retry:
 
                 if (zi->rctx.iswaiting){
                   if (buffer_pos == zi->rctx.iswaiting){
+                    printk("isWaiting=%d\n", buffer_pos); 
                     i++;
                     goto end_round;
                   }
@@ -6584,8 +6646,8 @@ static bool cannot_reclaim_zone(struct zns_swap_info_struct *zi, int i)
 {
 	int count;
 
-	count = atomic_read(&zi->swap_zones[i].slot_count);
-	if (count < zi->zone_capacity)
+        count = atomic_read(&zi->swap_zones[i].slot_count);
+        if (count < zi->zone_capacity)
 		return true;
 
 	if (i == atomic_read(&zi->emergency_gc_zone))
@@ -6614,6 +6676,7 @@ static inline int find_victim_zone(struct zns_swap_info_struct *zi)
 		return -1;
 	}
 
+        printk(KERN_INFO "We would find the victim ZONE\n");
 	for(i = 0; i < zi->num_zones; i++) {
 		int invalid;
 		int has_cache;
@@ -6650,7 +6713,17 @@ static void kznsd_gc(struct zns_swap_info_struct *zi)
 	/* always try and clean waiting zones first */
 	/* no race with GC zone - if no invalids, GC takes care of
 	 * the zone, if there are invalids, it will not enter*/
+         int i;
+         printk("[Wait GC Bitmap]\n");
+         for(i = 0; i< zi->num_zones; i++){
+           int k;
+           k =  test_bit(i, zi->gc_waiting_bitmap);
+           if (k)
+              printk("%dth bit waits GC [%d] ", i, k);
+         }
+         printk("\n");
 	for_each_set_bit(bit, zi->gc_waiting_bitmap, zi->num_zones) {
+          printk(KERN_INFO "Try and clean waiting Zone=%d\n", bit);
 		gc_reset_swap_zone(zi, bit);
 		clear_bit(bit, zi->gc_waiting_bitmap);
 	}
@@ -6658,8 +6731,11 @@ static void kznsd_gc(struct zns_swap_info_struct *zi)
 	/* only call the "real" gc if we are perfoming gc or in direct
 	 * reclaim mode */
 	if (!zi->rctx.last_pos && !test_bit(ZNS_SWAP_UNDER_GC, &zi->flags) &&
-			!test_bit(ZNS_SWAP_SUSPEND, &zi->flags))
+			!test_bit(ZNS_SWAP_SUSPEND, &zi->flags)){
+          printk(KERN_INFO "Only real GC can continune GC.... last_pos=%d ZNSSWAPUGC=%d ZNSWAPSUSP=%d\n",
+          zi->rctx.last_pos, test_bit(ZNS_SWAP_UNDER_GC, &zi->flags), test_bit(ZNS_SWAP_SUSPEND, &zi->flags));
 		return;
+        }
 
 again:
 	switch(zi->rctx.stat) {
