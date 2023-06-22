@@ -316,6 +316,12 @@ enum alloc_policy {
 	ZNS_POLICY_MODULE,
 };
 
+struct activate_info {
+        swp_entry_t src;
+        swp_entry_t dest;
+        struct page *move_page;
+};
+
 struct reclaim_ctx {
 	struct page *buffer;
 	struct page *buffer_wait;
@@ -324,12 +330,11 @@ struct reclaim_ctx {
 	unsigned int num_pages;
 	unsigned int last_pos;
 	struct bio *rmove_bios[ZNS_GC_PAGES];
-	struct bio *wmove_bios[ZNS_GC_PAGES];
 	enum status stat;
 	int from_zone;
         int last_bio;
-        int iswaiting;
-        bool islastturn;
+        int zone_num;
+        struct activate_info *act_info;
 };
 struct swap_zone {
 	atomic_t count;		/* Number of available slots in a zone */
@@ -386,6 +391,7 @@ struct zns_swap_info_struct {
         atomic_t resetting_zone;
         atomic_t current_gc_zone_slot;
         struct bio **swap_bios;
+        unsigned long bioflag;
 };
 
 /* API structs */

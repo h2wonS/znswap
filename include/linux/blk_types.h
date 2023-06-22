@@ -216,6 +216,7 @@ static inline void bio_issue_init(struct bio_issue *issue,
 			((u64)size << BIO_ISSUE_SIZE_SHIFT));
 }
 
+#define ZNS_WRITE_GRAN 48
 /*
  * main unit of I/O for the block layer and lower layers (ie drivers and
  * stacking drivers)
@@ -279,9 +280,10 @@ struct bio {
         int tmp;
         int padded;
 
-        struct page_md_m chunk_map[47];
-        unsigned long dest_entry[48];
-        unsigned long pad_list[48];
+        struct page_md_m chunk_map[ZNS_WRITE_GRAN - 1];
+        unsigned long dest_entry[ZNS_WRITE_GRAN];
+        unsigned long pad_list[ZNS_WRITE_GRAN];
+        unsigned long gc_bitmap[ZNS_WRITE_GRAN];
 
 	/*
 	 * We can inline a number of vecs at the end of the bio, to avoid
