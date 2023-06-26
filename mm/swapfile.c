@@ -153,7 +153,7 @@ static inline unsigned char swap_count(unsigned char ent)
 #define TTRS_UNMAPPED		0x2
 /* Reclaim the swap entry if swap is getting full*/
 #define TTRS_FULL		0x4
-#define MAX_GC_RETRIES		100
+#define MAX_GC_RETRIES		1000
 /* returns 1 if swap entry is freed */
 static int __try_to_reclaim_swap(struct swap_info_struct *si,
 				 unsigned long offset, unsigned long flags)
@@ -2187,14 +2187,8 @@ void _swap_entry_free(struct swap_info_struct *p, swp_entry_t entry, bool remove
 		unlock_cluster(ci);
 	}
 
-        if(isResetted)
-                  printk(KERN_INFO "[%s::%d]\n", __func__, __LINE__);
 	mem_cgroup_uncharge_swap(entry, 1);
-        if(isResetted)
-                  printk(KERN_INFO "[%s::%d]\n", __func__, __LINE__);
 	_swap_range_free(p, offset, 1, remove_shadow);
-        if(isResetted)
-                  printk(KERN_INFO "[%s::%d]\n", __func__, __LINE__);
 }
 
 /*
@@ -3736,13 +3730,9 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
 		for(i = 0; i < ZNS_GC_PAGES; i++) {
 			zi->rctx.buffer[i].mapping = NULL;
 			zi->rctx.buffer[i].index = 0;
-                        zi->rctx.buffer_wait[i].mapping = NULL;
-			zi->rctx.buffer_wait[i].index = 0;
-
 		}
 
 		__free_pages(zi->rctx.buffer, ZNS_GC_ORDER);
-		__free_pages(zi->rctx.buffer_wait, ZNS_GC_ORDER);
 		for (i = 0; i < ZNS_GC_PAGES; i++){
 			bio_put(zi->rctx.rmove_bios[i]);
                 }
@@ -4540,11 +4530,6 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 
 		zi->rctx.buffer = alloc_pages(GFP_KERNEL, ZNS_GC_ORDER);
 		if (!zi->rctx.buffer) {
-			pr_info("failed to buffer\n");
-			BUG();
-		}
-                zi->rctx.buffer_wait = alloc_pages(GFP_KERNEL, ZNS_GC_ORDER);
-		if (!zi->rctx.buffer_wait) {
 			pr_info("failed to buffer\n");
 			BUG();
 		}
@@ -5425,8 +5410,6 @@ static void __init zns_swap_sysfs_init(void)
 		kobject_put(zns_swap_kobj);
 }
 
-//extern struct bio **swap_bio;
-
 inline void reset_swap_zone(struct zns_swap_info_struct *zi, unsigned int n)
 {
 	set_bit(n, zi->gc_waiting_bitmap);
@@ -5470,7 +5453,7 @@ static void end_zone_reset(struct bio *bio)
 		old_gc_zone = atomic_cmpxchg(&zi->emergency_gc_zone,
 				emergency_zone, sz_num);
 		if(likely(old_gc_zone == emergency_zone)) {
-#if 0
+#if 1 
         printk("{%p} Reset zone#%ld increased FreeZone=%d stat=%d\n", 
         bio, sz_num, atomic_read(&zi->free_zones), bio->bi_status);
 #endif
@@ -5480,7 +5463,7 @@ static void end_zone_reset(struct bio *bio)
 		}
 	}
 	atomic_inc(&zi->free_zones);
-#if 0
+#if 1
         printk("{%p} Reset zone#%ld increased FreeZone=%d stat=%d\n", 
         bio, sz_num, atomic_read(&zi->free_zones), bio->bi_status);
 #endif
@@ -5490,7 +5473,6 @@ void wakeup_kznsd (struct zns_swap_info_struct *zi) {
 	if (!waitqueue_active(&zi->gc_wait)){
 		return;
         }
-        printk("wake up interruptible\n");
 	wake_up_interruptible(&zi->gc_wait);
 }
 
@@ -5890,6 +5872,7 @@ static void gc_move_zone_activate(struct zns_swap_info_struct *zi)
 	struct anon_vma *anon_vma = NULL;
 	int moved_ptes;
 	int retry = 0;
+        unsigned long flags;
 
         pgoff_t move_index;
         struct address_space *move_mapping; 
@@ -5897,12 +5880,13 @@ static void gc_move_zone_activate(struct zns_swap_info_struct *zi)
         unsigned int move_num_samples;
 
         num_pages = zi->rctx.num_pages;
-        retry = 0;
         printk(KERN_INFO "Zone=%d ACTIVATE!\n", zi->rctx.zone_num);
          
 
+        local_irq_save(flags);
         for(j = 0; j < num_pages; j++){
           move_page = zi->rctx.act_info[j].move_page;
+          retry = 0;
           //src_addr.val = page_private(move_page);
           src_addr.val = zi->rctx.act_info[j].src.val;
           dst_addr.val = zi->rctx.act_info[j].dest.val;
@@ -6013,8 +5997,10 @@ retry:
           if (find_get_page(swap_address_space(dst_addr), swp_offset(dst_addr)))
             BUG();
         }
+        local_irq_restore(flags);
 
         zi->rctx.num_pages = 0;
+        zi->rctx.zone_num = -1;
         atomic_set(&zi->rctx.finished_read, 0);
         atomic_set(&zi->rctx.finished_write, 0);
         WRITE_ONCE(zi->rctx.stat, ZNS_GC_IDLE);
@@ -6039,9 +6025,9 @@ static void gc_move_zone_write(struct zns_swap_info_struct *zi,
 	int gc_zone_num;
 	unsigned char map_count;
 	bool is_gc_zone;
+        bool init;
 	int retry;
-        bool is_over_zone;
-        bool try_submit_last;
+        unsigned long flags;
 
 	gc_zone_num = -1;
 	is_gc_zone = false;
@@ -6053,12 +6039,12 @@ static void gc_move_zone_write(struct zns_swap_info_struct *zi,
 		return;
 
 	/* submit all writes to new zones */
+
 	for (i = 0; i < num_pages; i++)
 	{
 		struct cgroup_subsys_state *css = NULL;
-                try_submit_last = false;
-                is_over_zone = false;
-                spin_lock_irqsave(&my_bio_lock, bioflag);
+                init = false;
+
                 move_page = &zi->rctx.buffer[i];
 
 		src_addr.val = page_private(move_page);
@@ -6082,17 +6068,9 @@ retry:
 		map_count = READ_ONCE(sz_src->swap_map[src_cur_offset]);
 
 		/* entry is empty */
-		if (!map_count){
-                  if(i == (num_pages -1)){ // for the last page of 48
-                    if(src_cluster != -1){
-                      spin_unlock(&sz_src->slot_lock[src_cluster]);
-                    }
-                    try_submit_last = true;
-                    goto retry_new_slot;
-                  }
-		  else{
+                if (!map_count){
+                    printk(">>>>>>>>>>>>>>>>>>>>>>>>>>>  i=%d\n", i);
                     continue;
-                  }
                 }
 
 		retry++;
@@ -6126,6 +6104,7 @@ retry_new_slot:
 			}
 		}
 
+                spin_lock_irqsave(&my_bio_lock, bioflag);
 		VM_BUG_ON(gc_zone_num < 0);
 		move_bio = zi->swap_bios[gc_zone_num];
 
@@ -6139,7 +6118,7 @@ retry_new_slot:
                   // only enter i == 0 (for the first page of 48)
                   zi->swap_bios[gc_zone_num] = bio_alloc(GFP_NOIO, 48);
 		  move_bio = zi->swap_bios[gc_zone_num];
-                  printk("GC Thread[%d] alloc new [zone%d] bio(%p) orig=%p\n", current->pid, gc_zone_num, move_bio, zi->swap_bios[gc_zone_num]);
+                  //printk("GC Thread[%d] alloc new [zone%d] bio(%p) orig=%p\n", current->pid, gc_zone_num, move_bio, zi->swap_bios[gc_zone_num]);
                   if(!zi->swap_bios[gc_zone_num]){ 
                     BUG();
                   }
@@ -6175,16 +6154,14 @@ retry_new_slot:
 
                 set_bit(move_bio->bi_vcnt, move_bio->gc_bitmap);
                 bio_add_page(move_bio, move_page, PAGE_SIZE, 0);
-                printk("GC Thread[%d] Addpage Bio{%p} Orig[%p] vnct=%d\n", current->pid, move_bio, zi->swap_bios[gc_zone_num],  move_bio->bi_vcnt);
+                // printk("GC Thread[%d] Addpage Bio{%p} Orig[%p] vnct=%d\n", current->pid, move_bio, zi->swap_bios[gc_zone_num],  move_bio->bi_vcnt);
 
                 if (move_bio->bi_vcnt == ZNS_WRITE_GRAN){
                   zi->swap_bios[gc_zone_num] = NULL;
-                  printk("Submit Bio(%p) gc_zone_num=%d dst_idx=%d\n", move_bio, gc_zone_num, dst_index);
+                  printk("Submit Bio(%p) gc_zone_num=%d dst_idx=%d -> Submitted \n", move_bio, gc_zone_num, dst_index);
                   dst_index++;
                   spin_unlock_irqrestore(&my_bio_lock, bioflag);
                   submit_bio(move_bio);
-                  zi->rctx.zone_num = -1;
-                  
 
                   if( i != num_pages ){
                     continue;
@@ -6203,7 +6180,7 @@ retry_new_slot:
 
 try_submit_waiting:    
 
-	if (src_cluster != -1 && !try_submit_last){
+	if (src_cluster != -1){
 		spin_unlock(&sz_src->slot_lock[src_cluster]);
         }
 
@@ -6568,7 +6545,7 @@ again:
 			break;
                 }
 		if (zi->rctx.num_pages){
-                        printk("NUNP=%d, START ACTIVATE\n", zi->rctx.num_pages);
+                        printk("NUNP=%d, START ACTIVATE last_pos=%d\n", zi->rctx.num_pages, zi->rctx.last_pos);
 			gc_move_zone_activate(zi);
                 }
 		/* check if we are done after this activate */
@@ -6582,6 +6559,7 @@ again:
 			WRITE_ONCE(zi->rctx.stat, ZNS_GC_IDLE);
 			atomic_set(&zi->rctx.finished_read, 0);
 			atomic_set(&zi->rctx.finished_write, 0);
+                        printk("GC FINISHED\n");
 			/* we finish here after resetting the zone */
 			return;
 		} else if(!zi->rctx.num_pages){
