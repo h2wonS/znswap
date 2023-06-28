@@ -279,11 +279,13 @@ struct bio {
 	struct page_md_m	bi_page_md;
         int tmp;
         int padded;
+        unsigned long last_updated;
 
         struct page_md_m chunk_map[ZNS_WRITE_GRAN - 1];
         unsigned long dest_entry[ZNS_WRITE_GRAN];
         unsigned long pad_list[ZNS_WRITE_GRAN];
         unsigned long gc_bitmap[ZNS_WRITE_GRAN];
+        unsigned long pad_bitmap[ZNS_WRITE_GRAN];
 
 	/*
 	 * We can inline a number of vecs at the end of the bio, to avoid

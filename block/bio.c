@@ -254,7 +254,9 @@ void bio_init(struct bio *bio, struct bio_vec *table,
 	bio->bi_max_vecs = max_vecs;
         bio->tmp = 0xffffffff;
         bio->padded = 0;
+        bio->last_updated = jiffies;
         bitmap_zero(bio->gc_bitmap, ZNS_WRITE_GRAN);
+        bitmap_zero(bio->pad_bitmap, ZNS_WRITE_GRAN);
         int i;
         for(i = 0; i<48; i++ ) {
           bio->dest_entry[i] = 0;

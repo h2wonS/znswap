@@ -315,7 +315,6 @@ swp_entry_t get_swap_page(struct page *page, struct swappolicy *sp,
 		get_zns_swap_page(si, &entry, page, sp, requires_flush);
 		goto out_zns;
 	}
-        printk(KERN_INFO "[%s::%s::%d] FUCK!!!\n", __FILE__, __func__, __LINE__);
 
 	if (PageTransHuge(page)) {
 		if (IS_ENABLED(CONFIG_THP_SWAP))

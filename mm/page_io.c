@@ -35,8 +35,8 @@ extern void wakeup_kznsd (struct zns_swap_info_struct *zi);
 
 void end_swap_bio_write(struct bio *bio)
 {
-    int i;
-    struct page *cur_page;
+    int i, j;
+    struct page *cur_page, *page;
     unsigned long new_off;
     unsigned long flags;
     int new_zone;
@@ -47,97 +47,133 @@ void end_swap_bio_write(struct bio *bio)
     struct zns_swap_info_struct *zi;
     swp_entry_t entry;
     swp_entry_t src_addr, dst_addr;
+    int written_zone;
 
     WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED));
     local_irq_save(flags);
-    for_each_set_bit(i, bio->gc_bitmap, ZNS_WRITE_GRAN){
-      if (bio->bi_status) {
-        pr_info("{%p} %dth Page :: Error writing to disk during GC zone %d slotc %u slot count %u max %u open %d\n",
-            bio,
-            i,
-            new_zone,
-            atomic_read(&zi->swap_zones[new_zone].count),
-            atomic_read(&zi->swap_zones[new_zone].slot_count),
-            zi->zone_capacity,
-            atomic_read(&zi->swap_zones[new_zone].open));
-        BUG();
-      }
-      cur_page = bio->bi_io_vec[i].bv_page;
-      src_addr.val = page_private(cur_page);
+
+    for_each_set_bit(i, bio->pad_bitmap, ZNS_WRITE_GRAN){
+      page = bio->bi_io_vec[0].bv_page;
+      src_addr.val = page_private(page);
       si = swap_type_to_swap_info(swp_type(src_addr));
       zi = si->zns_swap;
+      written_zone = (bio->bi_iter.bi_sector >> 3) / zi->zone_size;
 
-      new_off = (bio->bi_iter.bi_sector >> 3) + i;
-      new_zone = new_off / zi->zone_size;
-      new_zone_off = new_off % zi->zone_size;
-
-      dst_addr = swp_entry(swp_type(src_addr), new_off);
-
-      pages_write = atomic_read(&zi->rctx.finished_write);
-      zi->rctx.act_info[pages_write].src.val = src_addr.val;
-      zi->rctx.act_info[pages_write].dest.val = dst_addr.val;
-      zi->rctx.act_info[pages_write].move_page = cur_page;
-      
-      pages_write = atomic_inc_return(&zi->rctx.finished_write);
-      slot_count = atomic_inc_return(&si->zns_swap->swap_zones[new_zone].slot_count);
-
+      //printk("BIO{%p} Padded Bit %d writtenZone=%d\n", bio, i, written_zone);
+      free_page(bio->pad_list[i]);
+      atomic_inc(&zi->swap_zones[written_zone].invalid);
+      slot_count = atomic_inc_return(&si->zns_swap->swap_zones[written_zone].slot_count);
       if (slot_count == zi->zone_capacity) {
-        atomic_set(&zns_si->zns_swap->swap_zones[new_zone].open, 3);
+        atomic_set(&zns_si->zns_swap->swap_zones[written_zone].open, 3);
         atomic_inc(&zns_si->zns_swap->available_open_zones);
       }
-      if (pages_write == zi->rctx.num_pages){
+#if 0
+      pages_write = atomic_read(&zi->rctx.finished_write);
+      if (pages_write == zi->rctx.num_pages && zi->rctx.padded){
         wakeup_kznsd(zi);
       }
+      else if (zi->rctx.padded)
+        prtk("SHIT pages_write=%d, num_pages=%d\n", pages_write, zi->rctx.num_pages);
+//      else BUG();
+#endif
     }
 
-    for_each_clear_bit(i, bio->gc_bitmap, ZNS_WRITE_GRAN){
-      cur_page = bio->bi_io_vec[i].bv_page;
-      entry.val = page_private(cur_page);
-      si = swap_type_to_swap_info(swp_type(entry));
-      zi = si->zns_swap;
+    for_each_clear_bit(j, bio->pad_bitmap, ZNS_WRITE_GRAN){
+      for_each_set_bit(i, bio->gc_bitmap, ZNS_WRITE_GRAN){ 
+        if (bio->bi_status) {
+          pr_info("{%p} %dth Page :: Error writing to disk during GC zone %d slotc %u slot count %u max %u open %d\n",
+              bio,
+              i,
+              new_zone,
+              atomic_read(&zi->swap_zones[new_zone].count),
+              atomic_read(&zi->swap_zones[new_zone].slot_count),
+              zi->zone_capacity,
+              atomic_read(&zi->swap_zones[new_zone].open));
+          BUG();
+        }
 
-      new_off = (bio->bi_iter.bi_sector >> 3) + i;
-      new_zone = new_off / zi->zone_size;
-      new_zone_off = new_off % zi->zone_size;
+        if(i == j){
+          cur_page = bio->bi_io_vec[i].bv_page;
+          src_addr.val = page_private(cur_page);
+          si = swap_type_to_swap_info(swp_type(src_addr));
+          zi = si->zns_swap;
 
+          new_off = (bio->bi_iter.bi_sector >> 3) + i;
+          new_zone = new_off / zi->zone_size;
+          new_zone_off = new_off % zi->zone_size;
 
-      if (bio->bi_status) {
-        struct request_queue *q = bio->bi_bdev->bd_disk->queue;
-        long slot;
-        sector_t zone_start = (blk_queue_zone_sectors(q) >> 3) *
-          swp_offset(entry);
+          dst_addr = swp_entry(swp_type(src_addr), new_off);
 
-        SetPageError(cur_page);
-        slot = (unsigned long)new_off - (unsigned long)zone_start;
-        pr_info("%lu: {%p} Error on swap zone: %lu slot to %d zone!\n", swp_offset(entry), bio, slot, new_zone);
-        BUG();
-        /*
-         * We failed to write the page out to swap-space.
-         * Re-dirty the page in order to avoid it being reclaimed.
-         * Also print a dire warning that things will go BAD (tm)
-         * very quickly.
-         *
-         * Also clear PG_reclaim to avoid rotate_reclaimable_page()
-         */
-        set_page_dirty(cur_page);
-        pr_alert_ratelimited("Write-error on swap-device (%u:%u:%llu)\n",
-            MAJOR(bio_dev(bio)), MINOR(bio_dev(bio)),
-            (unsigned long long)bio->bi_iter.bi_sector);
-        ClearPageReclaim(cur_page);
+          pages_write = atomic_read(&zi->rctx.finished_write);
+          zi->rctx.act_info[pages_write].src.val = src_addr.val;
+          zi->rctx.act_info[pages_write].dest.val = dst_addr.val;
+          zi->rctx.act_info[pages_write].move_page = cur_page;
+
+          pages_write = atomic_inc_return(&zi->rctx.finished_write);
+          slot_count = atomic_inc_return(&si->zns_swap->swap_zones[new_zone].slot_count);
+
+          if (slot_count == zi->zone_capacity) {
+            atomic_set(&zns_si->zns_swap->swap_zones[new_zone].open, 3);
+            atomic_inc(&zns_si->zns_swap->available_open_zones);
+          }
+          if (pages_write == zi->rctx.num_pages){
+            wakeup_kznsd(zi);
+          }
+        }
       }
 
-      if (likely(PageSwapBacked(cur_page) && PageSwapCache(cur_page) && is_zns_tmp_swp_entry(entry))) {
-        /* no lock is required here, since the writeback is cleared
-         * after the update, and page private is inspected only if
-         * writeback is off */
-        set_page_private(cur_page, zns_tmp_swp_entry(swp_type(entry), new_off).val);
-        add_to_zswap(cur_page);
-      } else if (PageSwapBacked(cur_page) && PageSwapCache(cur_page) && is_zns_swp_entry(entry)) {
-        BUG();
+      for_each_clear_bit(i, bio->gc_bitmap, ZNS_WRITE_GRAN){
+        if (i == j){
+          cur_page = bio->bi_io_vec[i].bv_page;
+          entry.val = page_private(cur_page);
+          si = swap_type_to_swap_info(swp_type(entry));
+          zi = si->zns_swap;
+
+          new_off = (bio->bi_iter.bi_sector >> 3) + i;
+          new_zone = new_off / zi->zone_size;
+          new_zone_off = new_off % zi->zone_size;
+
+          if (bio->bi_status) {
+            struct request_queue *q = bio->bi_bdev->bd_disk->queue;
+            long slot;
+            sector_t zone_start = (blk_queue_zone_sectors(q) >> 3) *
+              swp_offset(entry);
+
+            SetPageError(cur_page);
+            slot = (unsigned long)new_off - (unsigned long)zone_start;
+            pr_info("%lu: {%p} Error on swap zone: %lu slot to %d zone!\n", swp_offset(entry), bio, slot, new_zone);
+            BUG();
+            /*
+             * We failed to write the page out to swap-space.
+             * Re-dirty the page in order to avoid it being reclaimed.
+             * Also print a dire warning that things will go BAD (tm)
+             * very quickly.
+             *
+             * Also clear PG_reclaim to avoid rotate_reclaimable_page()
+             */
+            set_page_dirty(cur_page);
+            pr_alert_ratelimited("Write-error on swap-device (%u:%u:%llu)\n",
+                MAJOR(bio_dev(bio)), MINOR(bio_dev(bio)),
+                (unsigned long long)bio->bi_iter.bi_sector);
+            ClearPageReclaim(cur_page);
+          }
+
+          if (likely(PageSwapBacked(cur_page) && PageSwapCache(cur_page) && is_zns_tmp_swp_entry(entry))) {
+            /* no lock is required here, since the writeback is cleared
+             * after the update, and page private is inspected only if
+             * writeback is off */
+            set_page_private(cur_page, zns_tmp_swp_entry(swp_type(entry), new_off).val);
+            add_to_zswap(cur_page);
+          } else if (PageSwapBacked(cur_page) && PageSwapCache(cur_page) && is_zns_swp_entry(entry)) {
+            BUG();
+          }
+          end_page_writeback(cur_page);
+        }
       }
-      end_page_writeback(cur_page);
     }
+
     bitmap_zero(bio->gc_bitmap, ZNS_WRITE_GRAN);
+    bitmap_zero(bio->pad_bitmap, ZNS_WRITE_GRAN);
     local_irq_restore(flags);
     bio_put(bio);
 }
@@ -479,33 +515,73 @@ int __swap_writepage(struct page *page, struct writeback_control *wbc,
         zi->swap_bios[swp_idx]->bi_iter.bi_sector = zone_start;
         zi->swap_bios[swp_idx]->bi_end_io = end_write_func;
         bio_add_page(zi->swap_bios[swp_idx], page, PAGE_SIZE, 0);
-#if 0
-        if(zi->rctx.zone_num == swp_idx){
-          printk(KERN_INFO "SWAP Thread[%d] Add page to Bio{%p} vcnt=%d Zone%d\n",
-          current->pid, zi->swap_bios[swp_idx], zi->swap_bios[swp_idx]->bi_vcnt, swp_idx);
-        }
-#endif
         bio_associate_blkg_from_page(zi->swap_bios[swp_idx], page);
         count_swpout_vm_event(page);
         set_page_writeback(page);
         unlock_page(page);
+        
+        if ((int)(zi->swap_bios[swp_idx]->bi_vcnt) > CHUNK_BUF_SIZE){
+          BUG();
+        }
 
         if ((int)(zi->swap_bios[swp_idx]->bi_vcnt) == CHUNK_BUF_SIZE){
             struct bio* new_bio;
             new_bio = zi->swap_bios[swp_idx];
+            zi->swap_bios[swp_idx]->last_updated = jiffies;
             zi->swap_bios[swp_idx] = NULL;
 
             new_bio->tmp = 0xbbbbbbbb;
-#if 0
-            if(zi->rctx.zone_num == swp_idx){
-              printk(KERN_INFO "SWAP Thread[%d] Add page to Bio{%p} vcnt=%d Zone%d -> Submitted\n",
-                  current->pid, new_bio, new_bio->bi_vcnt, swp_idx);
-            }
-#endif
             spin_unlock_irqrestore(&my_bio_lock, bioflag);
             submit_bio(new_bio);
             return 0;
         }
+        else if((int)(zi->swap_bios[swp_idx]->bi_vcnt >= CHUNK_BUF_SIZE/2) && ((jiffies - zi->swap_bios[swp_idx]->last_updated)  / HZ ) >= 1){
+         // printk("Time Limit 10sec\n");
+          int pad = 0;
+          int k;
+          unsigned int spos;
+
+          pad = CHUNK_BUF_SIZE - zi->swap_bios[swp_idx]->bi_vcnt;
+          for(k = 0; k < pad; k++) {
+            spos = atomic_inc_return(&zi->swap_zones[swp_idx].count) - 1;
+            if (spos >= zi->zone_capacity){
+              atomic_dec(&zi->swap_zones[swp_idx].count);
+              BUG();
+            }
+            struct page *pad = alloc_page(GFP_KERNEL);
+            if (!pad) BUG();
+
+            if (spos == zi->zone_capacity -1){
+              int cur_z_slot;
+
+              cur_z_slot = zi->swap_zones[swp_idx].cur_open_slot;
+              VM_BUG_ON(cur_z_slot >= zi->max_open_zones);
+              VM_BUG_ON(cur_z_slot < 0);
+              atomic_set(&zi->open_zones[cur_z_slot], -1);
+              atomic_set(&zi->using_open_zones[cur_z_slot], 0);
+            }
+
+            int idx = 0;
+            idx = zi->swap_bios[swp_idx]->bi_vcnt;
+            zi->swap_bios[swp_idx]->pad_list[idx] = (unsigned long) page_address(pad);
+            set_bit(idx, zi->swap_bios[swp_idx]->pad_bitmap);
+            bio_add_page(zi->swap_bios[swp_idx], pad, PAGE_SIZE, 0);
+          }
+          if (zi->swap_bios[swp_idx]->bi_vcnt == CHUNK_BUF_SIZE){
+            struct bio* new_bio;
+            new_bio = zi->swap_bios[swp_idx];
+            zi->swap_bios[swp_idx]->last_updated = jiffies;
+            zi->swap_bios[swp_idx] = NULL;
+
+            new_bio->tmp = 0xcccccccc;
+            printk(KERN_INFO "SWAP SUBMIT PADDED BIO To ZONE %d \n", swp_idx);
+            spin_unlock_irqrestore(&my_bio_lock, bioflag);
+            submit_bio(new_bio);
+            return 0;
+          }
+          else BUG();
+        }
+
         spin_unlock_irqrestore(&my_bio_lock, bioflag);
         return 0;
     } else if (is_zns_swp_entry(entry)){

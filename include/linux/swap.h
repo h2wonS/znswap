@@ -288,8 +288,8 @@ struct swap_cluster_list {
 /* 4MiB buffer */
 #define ZNS_GC_ORDER 10 /* page order */
 #define ZNS_WRITE_GRAN 48 /* 48 pages = 192KB */
-//#define ZNS_GC_BYTES (1UL << (ZNS_GC_ORDER + PAGE_SHIFT))
-#define ZNS_GC_BYTES 192 * 1024 * 21
+#define ZNS_GC_BYTES (1UL << (ZNS_GC_ORDER + PAGE_SHIFT))
+//#define ZNS_GC_BYTES 192 * 1024 * 21
 #define ZNS_GC_PAGES (ZNS_GC_BYTES >> 12)
 #define ZNS_GC_BIOS ((ZNS_GC_PAGES / ZNS_WRITE_GRAN) + 1UL)
 
@@ -325,7 +325,6 @@ struct activate_info {
 
 struct reclaim_ctx {
 	struct page *buffer;
-	struct page *buffer_wait;
 	atomic_t finished_read;
 	atomic_t finished_write;
 	unsigned int num_pages;
@@ -333,8 +332,9 @@ struct reclaim_ctx {
 	struct bio *rmove_bios[ZNS_GC_PAGES];
 	enum status stat;
 	int from_zone;
-        int last_bio;
         int zone_num;
+        bool islastturn;
+        int padded;
         struct activate_info *act_info;
 };
 struct swap_zone {
